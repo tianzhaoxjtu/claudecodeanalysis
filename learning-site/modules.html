@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="modules">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>模块拆解</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索模块"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">模块</div>
+          <h2>按职责和边界看模块，而不是按目录顺序看模块</h2>
+          <p>命令、工具、查询、任务、权限、状态、扩展，这几类模块共同组成主骨架。真正需要理解的是“谁拥有决策权、谁只是装配器、谁承担副作用”。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>命令系统和工具系统为什么要分开？</li>
+            <li><code>QueryEngine</code> 与 <code>query()</code> 谁才是执行核心？</li>
+            <li>任务系统和工具系统的边界在哪里？</li>
+            <li>插件、MCP、skills 为什么不是一套统一扩展点？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="dependency-diagram">模块 / 组件依赖图</h2>
+          <p>这张图强调最重要的装配依赖和运行依赖，帮助判断改一个模块时最可能牵动哪里。它不是 import 全量图，而是架构层面的关键依赖图。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  SETTINGS["settings.ts / types.ts"] --> PERMISSIONS["permissionsLoader.ts / permissionSetup.ts"]
+  SETTINGS --> MCPCONFIG["services/mcp/config.ts"]
+  PLUGINS["pluginLoader.ts / loadPluginCommands.ts"] --> COMMANDS["commands.ts"]
+  SKILLS["loadSkillsDir.ts"] --> COMMANDS
+  TOOLDEF["Tool.ts / tools.ts"] --> REPL["screens/REPL.tsx"]
+  TOOLDEF --> QE["QueryEngine.ts"]
+  COMMANDS --> REPL
+  MCPCONFIG --> STATE["AppStateStore.ts"]
+  PERMISSIONS --> REPL
+  STATE --> REPL
+  STATE --> QE
+  QE --> QUERY["query.ts"]
+  REPL --> QUERY
+  QUERY --> TOOLSVC["StreamingToolExecutor / toolOrchestration / toolExecution"]
+  TOOLSVC --> TASKS["Task.ts / tasks/* / runAgent.ts"]</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/utils/settings/*</code>、<code>src/utils/permissions/*</code>、<code>src/utils/plugins/*</code>、<code>src/skills/loadSkillsDir.ts</code>、<code>src/commands.ts</code>、<code>src/Tool.ts</code>、<code>src/tools.ts</code>、<code>src/screens/REPL.tsx</code>、<code>src/QueryEngine.ts</code>、<code>src/query.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>commands 和 tools 的扩展入口并不对称；插件和 skills 更偏向命令层，MCP 和 settings 更深地影响运行态与能力可见性。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="commands">命令系统</h2>
+          <p><code>src/commands.ts</code> 不是简单导出内建命令，而是一个 command aggregator。它会把 built-in commands、workflow commands、skills 生成的 prompt commands、plugin commands、dynamic commands 统一合并，再按 feature、可用性和可见性过滤。</p>
+          <ul class="fact-list">
+            <li>职责：为用户提供“显式操作入口”。</li>
+            <li>边界：命令负责触发动作、改变模式、调用查询或应用行为，但不等于模型工具。</li>
+            <li>隐式约束：新增命令不只是在目录里加文件，还要进入聚合、命名空间、可见性与帮助系统。</li>
+          </ul>
+          <div class="tag-row"><span class="tag">用户接口</span><span class="tag">多来源合并</span><span class="tag">availability 过滤</span></div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="tools">工具系统</h2>
+          <p><code>src/tools.ts</code> 定义模型可见的工具全集，并按 feature gate、环境、用户类型和启用条件决定最终暴露哪些工具。<code>src/Tool.ts</code> 的 <code>buildTool()</code> 会填入默认行为，例如 <code>isConcurrencySafe = false</code>、<code>isReadOnly = false</code>，这说明系统在默认值上更偏向保守而非乐观。</p>
+          <ul class="fact-list">
+            <li>职责：为模型提供“可执行能力面”。</li>
+            <li>边界：工具不是 util 函数，而是受 schema、权限、并发和 telemetry 约束的协议对象。</li>
+            <li>隐式约束：如果工具作者没有显式声明并发安全或只读性，系统会按更保守的策略处理。</li>
+          </ul>
+          <div class="tag-row"><span class="tag">模型接口</span><span class="tag">上下文对象</span><span class="tag">并发/权限敏感</span></div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="query">查询执行层</h2>
+          <p><code>src/QueryEngine.ts</code> 是会话级 façade，负责 transcript、messages、usage、abort、session semantics；<code>src/query.ts</code> 是 turn 级共享内核，负责 memory prefetch、skill prefetch、context collapse、compact、budget、API 调用和 tool loop。这个划分是整个仓库最重要的职责边界之一。</p>
+          <div class="callout"><strong>关键结论：</strong>如果你把 <code>QueryEngine</code> 当成主执行器，会漏掉 REPL 直接调用 <code>query()</code> 的真实路径；如果你把 <code>query()</code> 当成唯一入口，又会看不到 headless/SDK 路径上的 transcript 和恢复语义。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="tasks">任务与 agent</h2>
+          <p><code>src/Task.ts</code> 定义统一任务模型，<code>src/tasks/*</code> 提供 shell、local agent、remote agent、in-process teammate 等具体实现。<code>src/tools/AgentTool/runAgent.ts</code> 体现了这一层的复杂性：子 agent 并不是“起一个线程”，而是要装配技能、MCP、hook、transcript、任务上下文，再在结束时清理这些资源。</p>
+          <ul class="fact-list">
+            <li>职责：承载长生命周期、可观察、可取消、可能后台化的执行。</li>
+            <li>边界：很多工具调用最终会生成任务，因此“工具层”和“任务层”不是替代关系，而是递进关系。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="permissions">权限与安全</h2>
+          <p>权限系统由 <code>src/utils/permissions/*</code>、<code>src/hooks/useCanUseTool.tsx</code>、<code>src/components/permissions/*</code> 共同组成。它不是单点判断，而是规则、classifier、hook、sandbox、UI prompt 叠加的判定管线。</p>
+          <ul class="fact-list">
+            <li>职责：把“可不可以执行”变成可解释、可治理的决策链。</li>
+            <li>隐式约束：Bash 等敏感工具可能经过 speculative classifier 路径，说明判定不总是同步且不总在 UI 层发生。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="state">状态与交互壳</h2>
+          <p><code>AppState</code> 与 <code>AppStateStore</code> 说明这里的状态不仅用于渲染，而是整个应用运行态的承载体。<code>src/screens/REPL.tsx</code> 则是最重要的集成壳：它把 prompt 提交、工具刷新、权限、消息、任务、通知、compact 和 session 恢复编织到一起。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="extensions">插件 / MCP / Skills</h2>
+          <ul class="check-list">
+            <li><strong>插件：</strong><code>pluginLoader.ts</code> 负责安装、缓存、验证、marketplace 路径与版本目录；<code>loadPluginCommands.ts</code> 负责把 markdown command 装配进命令空间。</li>
+            <li><strong>MCP：</strong><code>mcp/config.ts</code> 和 <code>mcp/client.ts</code> 负责配置合并、去重、连接、资源与工具发现。它更像外部能力协议。</li>
+            <li><strong>Skills：</strong><code>loadSkillsDir.ts</code> 基于 markdown/frontmatter 装配 prompt commands。它偏“流程与提示知识复用”，不是代码插件。</li>
+          </ul>
+          <div class="callout"><strong>设计 rationale：</strong>三者拆开，是因为它们面对的问题不同。插件处理本地扩展分发，MCP 处理外部能力接入，skills 处理提示与流程复用。统一成一种机制反而会让能力边界更混乱。</div>
+        </section>
+
+        <div class="next-prev">
+          <a href="architecture.html">← 上一页：架构</a>
+          <a href="runtime.html">下一页：运行与启动 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="assets/mermaid-init.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

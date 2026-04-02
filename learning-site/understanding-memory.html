@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="understanding">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>交互深潜</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索预处理、工具编排、memory 或 Dream"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">交互深潜</div>
+          <h2>ClaudeCode 的上下文工程不是单点功能，而是“输入预处理 + 工具执行协议 + 多层记忆 + 后台 consolidation”组成的运行时系统</h2>
+          <p>这一页不再做宽泛概览，而是顺着真实代码路径解释：一次输入如何在进入模型前被规范化和压缩；工具如何被注册、筛选、调度和回写；memory 为什么会拆成 memdir、session memory、transcript、agent memory 多层；Dream 为什么本质上是一个后台 memory gardener。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>用户输入在进入模型前到底会经历哪些重写、扩展和压缩？</li>
+            <li>工具不是函数表，而是怎样一种执行协议？</li>
+            <li>ClaudeCode 如何在流式输出过程中并发执行工具，又保持 transcript 正确？</li>
+            <li>Memory 为什么被拆成 memdir、session memory、agent memory 和 transcript 多层？</li>
+            <li>Dream 在系统里到底扮演什么角色，哪些结论是已确认事实，哪些仍是推断？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="overview-diagram">总览图：一次 turn 里有哪些上下文工程层</h2>
+          <p>这张图展示的是“主模型交互前后”的真实工程链路。输入先被编译成 turn，再被 query runtime 压到窗口预算内，之后才进入 tool loop，而 memory 与 Dream 又在主循环之外持续维护长期连续性。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  INPUT["输入 / queued command / remote prompt"] --> SUBMIT["handlePromptSubmit"]
+  SUBMIT --> PROC["processUserInputBase"]
+  PROC --> ATTACH["attachments / hooks / image metadata"]
+  PROC --> ROUTE["slash / bash / text prompt routing"]
+  ROUTE --> PREFIX["fetchSystemPromptParts + getUserContext/getSystemContext"]
+  ATTACH --> QUERY["query()"]
+  PREFIX --> QUERY
+  QUERY --> PACK["tool-result budget / snip / microcompact / collapse / autocompact"]
+  PACK --> MODEL["callModel"]
+  MODEL --> TOOLS["tool_use -> StreamingToolExecutor / runTools"]
+  TOOLS --> RESULT["tool_result / attachment / contextModifier"]
+  RESULT --> QUERY
+  QUERY --> STORE["sessionStorage / compact boundary / summaries"]
+  STORE --> MEM["memdir / session memory / extract memories / Dream"]</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/utils/handlePromptSubmit.ts</code>、<code>src/utils/processUserInput/processUserInput.ts</code>、<code>src/utils/queryContext.ts</code>、<code>src/query.ts</code>、<code>src/services/tools/*</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/memdir/*</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>ClaudeCode 的 context engineering 分成“输入级预处理”和“query 级预处理”两层，后者会在每一轮 query 前持续重写上下文窗口，而不是一次性选完上下文后交给模型。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="preprocessing">1. 模型交互前预处理机制</h2>
+          <p>这一层真正做的事，是把原始终端输入编译成主循环可消费的结构化 turn。它同时处理控制流、内容归一化、prompt 路由和上下文前置，不是单纯的“把输入发给模型”。</p>
+          <h3>1.1 机制目的</h3>
+          <ul class="fact-list">
+            <li><strong>控制输入生命周期：</strong><code>handlePromptSubmit()</code> 决定本次输入是立即执行、进入队列，还是通过 submit-interrupt 打断当前工具回合。</li>
+            <li><strong>统一输入形态：</strong>文本、粘贴文本、粘贴图片、content blocks、远程 bridge 消息都会在 <code>processUserInputBase()</code> 中被归一成内部消息结构。</li>
+            <li><strong>在模型前做确定性改写：</strong><code>exit</code> 会重写成 <code>/exit</code>，<code>ULTRAPLAN</code> 会重写成 <code>/ultraplan</code>，remote slash command 只有 bridge-safe 时才在本地执行。</li>
+          </ul>
+          <h3>1.2 核心调用链</h3>
+          <p>普通输入的主链路是：<code>handlePromptSubmit()</code> → <code>executeUserInput()</code> → <code>processUserInput()</code> → <code>processUserInputBase()</code> → <code>processBashCommand/processSlashCommand/processTextPrompt</code> → <code>executeUserPromptSubmitHooks()</code> → <code>onQuery()</code> → <code>query()</code>。</p>
+          <ul class="check-list">
+            <li><strong>入口层：</strong><code>handlePromptSubmit.ts</code> 先用 <code>parseReferences()</code> 和 <code>expandPastedTextRefs()</code> 处理粘贴引用，再过滤孤儿图片。</li>
+            <li><strong>队列层：</strong><code>queryGuard</code> 配合 <code>enqueue()</code> 保证主 REPL 一次只跑一个主 query；若当前工具都声明可取消，新输入会触发 interrupt。</li>
+            <li><strong>批处理层：</strong><code>executeUserInput()</code> 对 queued commands 逐个调用 <code>processUserInput()</code>，且只有第一条命令携带 attachments 和 pastedContents，后续命令会 <code>skipAttachments</code>。</li>
+          </ul>
+          <h3>1.3 输入编译的内部细节</h3>
+          <ul class="fact-list">
+            <li><strong>图片路径稳定化：</strong><code>processUserInputBase()</code> 会先 <code>storeImages()</code> 落盘，再并行 resize 图片，并把尺寸与路径写成 <code>isMeta</code> 消息。</li>
+            <li><strong>bridge 安全边界：</strong>remote bridge 输入默认不会触发本地 slash commands，只有 <code>isBridgeSafeCommand()</code> 允许的命令例外。</li>
+            <li><strong>显式 prompt routing：</strong><code>hasUltraplanKeyword()</code> 命中后立即改写成 <code>/ultraplan</code>，而不是让模型自行推断。</li>
+            <li><strong>三路 lowering：</strong><code>bash</code> 模式直接调用本地工具且 <code>shouldQuery: false</code>；slash command 再按 <code>local-jsx / local / prompt</code> 分派；普通文本走 <code>processTextPrompt()</code>。</li>
+          </ul>
+          <h3>1.4 hooks 和附件如何进入模型上下文</h3>
+          <p><code>getAttachmentMessages()</code> 负责把文件、目录、IDE selection、memory、task、规则文件、agent/skill 线索整理成 attachment messages。之后 <code>executeUserPromptSubmitHooks()</code> 还可以阻断 continuation、附加 <code>hook_additional_context</code>，甚至用 warning message 替换原始 prompt。</p>
+          <h3>1.5 query-time packing</h3>
+          <ul class="fact-list">
+            <li><strong>窗口裁剪：</strong><code>getMessagesAfterCompactBoundary()</code>、<code>applyToolResultBudget()</code>、<code>snipCompactIfNeeded()</code>、<code>microcompact()</code> 共同控制窗口大小。</li>
+            <li><strong>投影与折叠：</strong><code>contextCollapse.applyCollapsesIfNeeded()</code> 在 autocompact 之前运行，尽量保留比 summary 更细的上下文粒度。</li>
+            <li><strong>稳定前缀：</strong><code>fetchSystemPromptParts()</code>、<code>getUserContext()</code>、<code>getSystemContext()</code> 构造 cache-critical prefix，再由 <code>prependUserContext()</code> 与 <code>appendSystemContext()</code> 进入最终请求。</li>
+          </ul>
+          <div class="callout"><strong>工程判断：</strong>ClaudeCode 把“能确定性完成的上下文工程”前移到代码侧，把真正需要推理的部分留给模型。这样做的收益是更稳的 prompt cache、更少的上下文噪声，以及更明确的安全边界。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="tooling">2. 工具体系与调度编排</h2>
+          <p>ClaudeCode 的工具系统本质上是一套协议栈，而不是“模型调用本地函数”。工具定义、暴露范围、执行顺序、权限决策、hook 与 transcript 回写都在这一层完成。</p>
+          <h3>2.1 Tool 抽象为什么是胖接口</h3>
+          <ul class="fact-list">
+            <li><strong>协议定义：</strong><code>src/Tool.ts</code> 中的 <code>Tool</code> 至少包含 <code>inputSchema</code>、<code>validateInput</code>、<code>isConcurrencySafe</code>、<code>interruptBehavior</code>、<code>backfillObservableInput</code>、<code>mapToolResultToToolResultBlockParam</code> 等切面。</li>
+            <li><strong>运行时能力对象：</strong><code>ToolUseContext</code> 不只是执行参数，还携带 <code>messages</code>、<code>abortController</code>、<code>toolDecisions</code>、<code>readFileState</code>、<code>getAppState()</code> 等整轮 query 的状态。</li>
+          </ul>
+          <h3>2.2 工具如何注册和筛选</h3>
+          <ul class="check-list">
+            <li><strong>基础工具池：</strong><code>getAllBaseTools()</code> 收集 built-in tools，并按 feature gate 决定是否引入某些工具，例如 ToolSearch。</li>
+            <li><strong>可见工具池：</strong><code>getTools(permissionContext)</code> 再根据 mode、deny rules、REPL 隐藏规则和 <code>isEnabled()</code> 做二次过滤。</li>
+            <li><strong>最终暴露面：</strong><code>assembleToolPool()</code> 将 built-in 与 MCP tools 合并，形成模型真正可见的工具集合。</li>
+            <li><strong>隐藏约束：</strong>deferred tool 的 schema 不一定真的发给模型；<code>buildSchemaNotSentHint()</code> 会在失败时提示先调用 ToolSearch。</li>
+          </ul>
+          <h3>2.3 单个工具调用的真实执行链</h3>
+          <ul class="fact-list">
+            <li><strong>入口：</strong><code>runToolUse()</code> 先查当前可见工具池，不命中时再尝试 alias fallback。</li>
+            <li><strong>schema 与业务校验：</strong><code>checkPermissionsAndCallTool()</code> 先做 <code>inputSchema.safeParse()</code>，再做 <code>tool.validateInput()</code>。</li>
+            <li><strong>输入改写：</strong><code>backfillObservableInput()</code> 只在可观测副本上补字段，让 hooks 和 permissions 可见，但尽量不污染传给 <code>tool.call()</code> 的真实输入。</li>
+            <li><strong>执行协议：</strong><code>runPreToolUseHooks()</code> → <code>resolveHookPermissionDecision()</code> → <code>tool.call()</code> → <code>runPostToolUseHooks()</code> / <code>runPostToolUseFailureHooks()</code>。</li>
+          </ul>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant Q as query.ts
+  participant E as StreamingToolExecutor
+  participant O as toolOrchestration.ts
+  participant X as toolExecution.ts
+  participant T as Tool.call()
+
+  Q->>Q: assistant message emits tool_use
+  alt streaming tool execution enabled
+    Q->>E: addTool(tool_use)
+    E->>X: runToolUse(...)
+  else non-streaming path
+    Q->>O: runTools(toolUseBlocks,...)
+    O->>X: runToolUse(...)
+  end
+  X->>X: schema parse / validateInput / hooks / permission
+  X->>T: tool.call(...)
+  T-->>X: ToolResult + contextModifier
+  X-->>Q: tool_result user message / attachment / progress
+  Q->>Q: append to next iteration context</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/tools.ts</code>、<code>src/Tool.ts</code>、<code>src/query.ts</code>、<code>src/services/tools/toolOrchestration.ts</code>、<code>src/services/tools/StreamingToolExecutor.ts</code>、<code>src/services/tools/toolExecution.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>主模型负责发出 <code>tool_use</code>，runtime 负责让这些 <code>tool_use</code> 在统一协议下执行、回写和恢复。</p>
+          </div>
+          <h3>2.4 调度与并发语义</h3>
+          <ul class="fact-list">
+            <li><strong>普通批处理：</strong><code>partitionToolCalls()</code> 按 <code>tool.isConcurrencySafe(parsedInput)</code> 分并发批和串行批。</li>
+            <li><strong>contextModifier 乱序保护：</strong>并发批里的工具可同时执行，但 <code>contextModifier</code> 会在批次结束后按原始 tool 顺序应用。</li>
+            <li><strong>流式执行：</strong><code>StreamingToolExecutor</code> 在 assistant streaming 阶段边收到 <code>tool_use</code> 边执行，并维护 <code>queued / executing / completed / yielded</code> 状态。</li>
+            <li><strong>失败隔离：</strong>只有 Bash 错误会级联取消兄弟工具；普通读取类工具失败不会导致整个 batch 取消。</li>
+          </ul>
+          <p>这套设计的优势是执行链统一、hook 和权限可以无缝插入、telemetry 可观测性强。代价是 Tool 抽象相当厚，工具作者必须理解 schema、permission、hook、mapping、interrupt、streaming 等多个维度。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="memory">3. Memory 记忆机制</h2>
+          <p>这一层不是“有没有 memory 文件夹”这么简单。ClaudeCode 把连续性拆成 durable memory、session summary、transcript recovery 和 execution cache 几个层次，每层解决不同时间尺度的问题。</p>
+          <h3>3.1 分层结构</h3>
+          <ul class="fact-list">
+            <li><strong>durable memory：</strong><code>src/memdir/*</code> 提供跨会话、文件化、按类型组织的 memory。</li>
+            <li><strong>session memory：</strong><code>src/services/SessionMemory/sessionMemory.ts</code> 维护当前会话的 markdown 摘要文件。</li>
+            <li><strong>transcript continuity：</strong><code>src/utils/sessionStorage.ts</code> / <code>sessionRestore.ts</code> 负责事实链持久化与恢复。</li>
+            <li><strong>agent memory：</strong><code>src/tools/AgentTool/agentMemory.ts</code> 等模块为子代理提供 user/project/local scope 记忆。</li>
+            <li><strong>execution caches：</strong><code>readFileState</code>、<code>contentReplacementState</code> 更像执行缓存而不是语义记忆。</li>
+          </ul>
+          <h3>3.2 memdir 检索为什么不是 embedding</h3>
+          <p><code>findRelevantMemories()</code> 的路径是：<code>scanMemoryFiles()</code> 扫描 memory header，<code>formatMemoryManifest()</code> 组织候选，再用 <code>sideQuery()</code> 让小模型选最多 5 个文件名。这说明当前仓库并未展示向量库或 embedding index。</p>
+          <ul class="fact-list">
+            <li><strong>异步预取：</strong><code>startRelevantMemoryPrefetch()</code> 只拿最后一个真实用户消息作为 query，且完全不阻塞当前 turn。</li>
+            <li><strong>去重预算：</strong>已经 surfacing 过的 memory 会被过滤，避免每轮都重复附加同一份记忆。</li>
+          </ul>
+          <h3>3.3 session memory 的真实更新链</h3>
+          <ul class="check-list">
+            <li><strong>触发阈值：</strong><code>sessionMemoryUtils.ts</code> 默认要求初始化阈值 10000 tokens，更新阈值 5000 tokens，或 3 次工具调用，并且只在 <code>querySource === 'repl_main_thread'</code> 时运行。</li>
+            <li><strong>文件准备：</strong><code>setupSessionMemoryFile()</code> 会创建 memory 文件、载入模板，并在读取前从 <code>readFileState</code> 中删除该路径，防止 dedup 返回 <code>file_unchanged</code> stub。</li>
+            <li><strong>更新方式：</strong>系统不会直接拼字符串，而是用 <code>runForkedAgent()</code> 启动受限 subagent，通过 <code>createMemoryFileCanUseTool(memoryPath)</code> 只允许它用 <code>FileEditTool</code> 编辑这一条确切路径。</li>
+          </ul>
+          <h3>3.4 transcript 与 continuity</h3>
+          <p>ClaudeCode 的 continuity 核心不在单一 <code>messages[]</code>。真正的恢复基础是 transcript、compact boundary、forked-agent cache prefix 和 session restore 逻辑的组合。<code>CacheSafeParams</code> 负责稳定 <code>systemPrompt/userContext/systemContext/forkContextMessages</code>，让子代理复用 prompt cache 的同时，又能通过 <code>createSubagentContext()</code> 隔离父子线程的可变状态。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  TURN["current turn"] --> QUERY["query()"]
+  QUERY --> PREFETCH["relevant memory prefetch"]
+  PREFETCH --> MEMDIR["memdir"]
+  QUERY --> TRANSCRIPT["session transcript / JSONL"]
+  QUERY --> CACHE["readFileState / contentReplacementState"]
+  QUERY --> SCHED["session memory scheduler"]
+  SCHED --> SUB["runForkedAgent(session_memory)"]
+  SUB --> SM["session memory markdown"]
+  TRANSCRIPT --> DREAM["Dream / extract memories"]
+  DREAM --> MEMDIR</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/memdir/findRelevantMemories.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/services/SessionMemory/sessionMemory.ts</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/utils/forkedAgent.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>memory 是分层协作系统。durable memory、session memory、transcript 和 execution cache 各自解决不同的问题，而不是互相替代。</p>
+          </div>
+          <div class="callout"><strong>重要设计原则：</strong><code>src/memdir/memoryTypes.ts</code> 明确禁止把代码结构、架构、git 状态等可重新推导信息直接写入 memory。目标是让长期记忆保存“难以重新发现但值得长期保存的事实”，而不是复制当前仓库状态。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="dream">4. Dream 机制分析</h2>
+          <p>从可见代码看，<code>Dream</code> 的真实角色是后台 memory consolidation。它的目标不是帮助当前对话“多想一步”，而是主动整理 durable memory，让未来会话更容易恢复上下文。</p>
+          <h3>4.1 触发与门控</h3>
+          <ul class="fact-list">
+            <li><strong>入口：</strong><code>backgroundHousekeeping.ts</code> 会调用 <code>initAutoDream()</code>，后者在闭包里维护 <code>lastSessionScanAt</code>，这是测试友好的设计。</li>
+            <li><strong>门控顺序：</strong><code>autoDream.ts</code> 先检查 <code>isGateOpen()</code>，再读 <code>lastConsolidatedAt</code>，随后检查时间门限、scan throttle、session 数门限，最后才尝试拿锁。</li>
+            <li><strong>默认阈值：</strong><code>minHours = 24</code>，<code>minSessions = 5</code>，并通过 GrowthBook cached config 或用户设置覆盖。</li>
+          </ul>
+          <h3>4.2 锁和失败恢复</h3>
+          <ul class="fact-list">
+            <li><strong>锁文件双重语义：</strong><code>.consolidate-lock</code> 的 mtime 既表示“锁存在”，又表示“上次 consolidation 时间”。</li>
+            <li><strong>PID 校验：</strong><code>tryAcquireConsolidationLock()</code> 写入 PID 后还会读回校验，避免两个 reclaiming 进程都误判自己拿到锁。</li>
+            <li><strong>失败回滚：</strong><code>rollbackConsolidationLock(priorMtime)</code> 会把 mtime 回滚到尝试前的时间，确保失败的 dream 不会整体推迟下一次触发。</li>
+          </ul>
+          <h3>4.3 Dream 子代理如何运行</h3>
+          <ul class="check-list">
+            <li><strong>子代理参数：</strong><code>runForkedAgent()</code> 使用 <code>querySource: 'auto_dream'</code>、<code>forkLabel: 'auto_dream'</code>、<code>skipTranscript: true</code>，说明 Dream 是后台维护任务而不是普通 turn。</li>
+            <li><strong>权限约束：</strong><code>createAutoMemCanUseTool(memoryRoot)</code> 只允许读 transcript / memory，并只允许在 auto-memory 目录内写。</li>
+            <li><strong>提示词结构：</strong><code>buildConsolidationPrompt()</code> 把工作流拆成 Orient、Gather、Consolidate、Prune 四个阶段，并要求 index 文件保持尺寸上限。</li>
+          </ul>
+          <h3>4.4 UI 映射与不确定性</h3>
+          <p><code>DreamTask.ts</code> 并不实现 dream 逻辑，而是给后台 fork 映射一个可见 task。它只维护 <code>starting / updating</code> 两个 phase，并通过 assistant turn 的 Edit/Write <code>tool_use</code> 收集 <code>filesTouched</code>。源码注释明确承认这只是近似视图，无法捕获 bash 间接写入。</p>
+          <div class="callout"><strong>确认与不确定性：</strong>自动 Dream 是已确认实现。手动 <code>/dream</code> 在注释层高度可疑，但当前快照里 <code>recordConsolidation()</code> 没有可见调用点，因此不能当成已闭合事实。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="takeaways">5. 技术总结与架构启示</h2>
+          <ul class="fact-list">
+            <li><strong>整体架构意图：</strong>把主对话循环集中到 <code>query()</code>，把确定性的上下文工程前移到预处理和 runtime gating，把长期维护任务放到受限 subagent 和后台 housekeeping。</li>
+            <li><strong>最大优势：</strong>prompt cache 意识强、工具协议统一、memory 分层清晰、后台 consolidation 能主动维护上下文 substrate。</li>
+            <li><strong>最大复杂度来源：</strong><code>query.ts</code> 和 <code>ToolUseContext</code> 承载了过多横切关注点，很多行为需要跨 compact、permissions、hooks、tool loop、memory 才能推理完整。</li>
+            <li><strong>关键 trade-off：</strong>系统获得了强 runtime 控制和强恢复能力，但代价是主循环厚重、feature gate 多、学习曲线陡，而且缺少统一 repo graph 时，深层项目理解仍依赖搜索与读取回合。</li>
+          </ul>
+          <p>放在现代 AI coding tool 语境里，这套实现更像一个 <em>runtime context operating system</em>：它持续装配上下文、持续执行外部动作、持续治理窗口、并在后台维护未来会话的记忆 substrate。</p>
+        </section>
+
+        <div class="next-prev">
+          <a href="config-build.html">← 上一页：配置与构建</a>
+          <a href="evaluation.html">下一页：设计评估 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="assets/mermaid-init.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="runtime">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>运行与启动流程</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索入口与启动文件"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">启动</div>
+          <h2>先理解三段式启动：入口装配、会话准备、基础设施初始化</h2>
+          <p>如果不先看清启动链路，后面的查询、权限、MCP、worktree 行为都会显得像“凭空出现”。这套代码最值得注意的不是只有一个入口，而是有一条被明确拆开的启动责任链。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>为什么启动被拆成 <code>main.tsx</code>、<code>setup.ts</code>、<code>entrypoints/init.ts</code> 三层？</li>
+            <li>REPL 是在哪里真正被启动的？</li>
+            <li>worktree、hooks、tmux、remote 等前置条件在哪一层被处理？</li>
+            <li>为什么这种拆法对冷启动和多运行模式更友好？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="startup-diagram">启动时序图</h2>
+          <p>这张图展示启动责任如何逐层下沉。重点不是“先后顺序”本身，而是不同初始化类型被有意识地放在不同层。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant User
+  participant Main as main.tsx
+  participant Setup as setup.ts
+  participant Init as entrypoints/init.ts
+  participant Load as commands/tools/plugins/MCP
+  participant Launch as replLauncher.tsx
+  participant Repl as REPL or headless path
+
+  User->>Main: 启动进程
+  Main->>Main: profileCheckpoint + 预热副作用
+  Main->>Setup: setup(...)
+  Setup->>Setup: cwd / hooks / worktree / terminal 恢复
+  Main->>Init: init()
+  Init->>Init: settings / telemetry / OAuth / proxy / scratchpad
+  Main->>Load: getCommands / getTools / MCP / plugins / skills
+  alt interactive mode
+    Main->>Launch: launchRepl(...)
+    Launch->>Repl: renderAndRun(REPL)
+  else headless / remote / print mode
+    Main->>Repl: QueryEngine 或其它模式入口
+  end</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/main.tsx</code>、<code>src/setup.ts</code>、<code>src/entrypoints/init.ts</code>、<code>src/replLauncher.tsx</code>、<code>src/screens/REPL.tsx</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>同一份源码要同时支持 REPL、headless、remote、bridge 等路径，所以启动必须分层，不能全部塞进一个入口函数。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="stage1">第一段：<code>src/main.tsx</code></h2>
+          <p>这是高层装配入口。它负责 profiling 预热、命令和工具注册、模式分流，并决定是进入 REPL、bridge 还是 remote 等运行路径。这里的核心职责不是实现每个子系统，而是把运行条件拼成一个可执行产品。</p>
+          <ul class="fact-list">
+            <li>装配命令、工具、MCP、plugins、skills。</li>
+            <li>根据 feature / mode 决定走哪条入口路径。</li>
+            <li>把真正的会话准备和基础设施初始化下沉给后续层。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="stage2">第二段：<code>src/setup.ts</code></h2>
+          <p>这层偏“会话准备”而不是“产品功能”。它做 Node 版本检查、UDS messaging、terminal 恢复、<code>setCwd</code>、hook snapshot、文件变更 watcher、worktree 和 tmux 相关准备。这一层的设计说明：作者把“终端环境能不能正确跑起来”视为一等问题，而不是入口顺手带过的副作用。</p>
+          <div class="question-box">问自己：如果当前工作目录是 worktree、hook-based VCS 或者 bridge/remote 模式，这一层会怎样改变后续运行前提？</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="stage3">第三段：<code>src/entrypoints/init.ts</code></h2>
+          <p>这一层偏“基础设施启用”，包括 settings system、safe env vars、CA 证书、proxy、mTLS、OAuth 补全、remote settings / policy limits 预加载、preconnect、scratchpad 初始化等。它的存在把“产品运行需要的基础设施”从“终端本地环境准备”里分离出来。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="repl-entry">REPL 真正是怎样启动的</h2>
+          <p>从入口层继续往下，会进入 <code>src/replLauncher.tsx</code> 和 <code>src/interactiveHelpers.tsx</code> 所组织的渲染路径，再由 <code>src/screens/REPL.tsx</code> 成为长期运行的交互壳。这条路径很重要，因为它解释了为什么 REPL 会拥有比“一个 React 页面”更高的职责密度。</p>
+          <div class="callout"><strong>设计取舍：</strong>把 REPL 启动包装成单独 launcher/helper 层，可以减少 <code>main.tsx</code> 的渲染细节负担，但并没有消除 REPL 作为运行时集成壳的复杂性。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="why-split">三段式启动为什么存在</h2>
+          <ul class="check-list">
+            <li>把“进程入口装配”和“会话环境准备”分开，降低主入口的心智负担。</li>
+            <li>把“本地终端条件”与“产品基础设施初始化”分开，方便支持 remote / bridge / enterprise 形态。</li>
+            <li>让 profiling、preconnect、OAuth、policy limits 之类的重操作可以更明确地安排时机。</li>
+            <li>为未来继续新增模式分流保留结构空间。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="entry-files">本页重点文件</h2>
+          <div class="file-card">
+            <h4><code>src/main.tsx</code></h4>
+            <p>主入口，产品模式与高层装配中心。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/setup.ts</code></h4>
+            <p>会话环境准备层，负责 cwd、hook、worktree、tmux、terminal 恢复等运行前条件。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/entrypoints/init.ts</code></h4>
+            <p>基础设施初始化层，负责配置、网络、安全环境变量、OAuth、scratchpad 等。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/replLauncher.tsx</code> / <code>src/interactiveHelpers.tsx</code></h4>
+            <p>把入口装配和具体 REPL 渲染/运行路径衔接起来。</p>
+          </div>
+        </section>
+
+        <div class="next-prev">
+          <a href="modules.html">← 上一页：模块</a>
+          <a href="flows.html">下一页：核心执行流 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="assets/mermaid-init.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

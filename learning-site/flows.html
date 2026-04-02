@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="flows">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>核心执行流</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索执行链路"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">执行流</div>
+          <h2>理解这套系统，关键不是“能调模型”，而是看清输入如何在 query、工具、权限、任务之间闭环</h2>
+          <p>这页聚焦真正会影响维护和改动安全性的执行链。最重要的一个事实是：REPL 路径和 headless/SDK 路径并不完全相同，但它们共享同一个 <code>query()</code> 执行核心。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>REPL 路径与 <code>QueryEngine</code> 路径有什么差别？</li>
+            <li>一次 turn 内，<code>query.ts</code> 的状态机做了哪些阶段性处理？</li>
+            <li>tool use 到底经过哪些层才真正执行？</li>
+            <li>权限拒绝是在哪些环节被决定和反馈的？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="e2e-diagram">端到端执行图</h2>
+          <p>这张图把交互式路径串起来，重点强调 REPL 并不会先进入 <code>QueryEngine</code>，而是经由输入预处理后直接进入 <code>query()</code>。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant User
+  participant REPL as screens/REPL.tsx
+  participant Submit as handlePromptSubmit.ts
+  participant Query as query.ts
+  participant API as services/api/claude.ts
+  participant ToolExec as services/tools/*
+  participant State as AppState / transcript
+
+  User->>REPL: 输入 prompt 或 slash command
+  REPL->>Submit: handlePromptSubmit(...)
+  Submit->>Submit: 引用展开 / 即时命令 / 排队判断
+  Submit-->>REPL: newMessages + shouldQuery
+  REPL->>REPL: 刷新 tools / MCP / system prompt
+  REPL->>Query: query({...})
+  Query->>API: create stream request
+  API-->>Query: assistant delta / tool_use
+  alt 无 tool_use
+    Query-->>State: 追加 assistant 消息 / usage
+  else 有 tool_use
+    Query->>ToolExec: runTools / StreamingToolExecutor
+    ToolExec-->>Query: tool_result / progress / attachments
+    Query->>API: 带新消息继续请求
+    Query-->>State: 回写 tool_result + assistant follow-up
+  end</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/screens/REPL.tsx</code>、<code>src/utils/handlePromptSubmit.ts</code>、<code>src/query.ts</code>、<code>src/services/api/claude.ts</code>、<code>src/services/tools/*</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>REPL 路径在真正执行前会刷新 tools/MCP，这是为了避免长生命周期组件持有过期能力集合。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow1">流 1：REPL 提交路径</h2>
+          <p><code>src/screens/REPL.tsx</code> 通过提交处理逻辑收集当前消息、system prompt、上下文和 UI 状态，然后直接调用 <code>query({...})</code>。一个容易被忽视但很重要的细节是：REPL 会在提交前刷新 tools/MCP，避免长生命周期组件捕获过期能力集合。</p>
+          <ul class="fact-list">
+            <li>输入来源：终端输入框、slash command、交互式辅助逻辑。</li>
+            <li>关键状态：当前 transcript、可见工具、MCP tools/resources、permission context。</li>
+            <li>主要副作用：消息追加、UI loading、任务更新、通知与成本追踪。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow2">流 2：headless / SDK 路径</h2>
+          <p><code>src/QueryEngine.ts</code> 更像会话外壳。它会先处理用户输入、写入 transcript、维护 usage 和 abort controller，然后再进入 <code>query()</code>。其中一个关键实现细节是：transcript 会在真正进入模型循环前先写盘，这意味着即使进程在首个 API 响应前崩溃，恢复也更容易成立。</p>
+          <div class="callout"><strong>结论：</strong><code>QueryEngine</code> 不是主执行器，而是为非 REPL 路径提供恢复性、可重放性和会话语义的外壳。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow3">流 3：<code>query()</code> 的 turn 状态机</h2>
+          <p><code>src/query.ts</code> 不是“发请求再收结果”的薄封装，而是一个包含多阶段治理的状态机。当前可见代码显示它至少涉及 memory prefetch、skill prefetch、query tracking、tool result budget、snip compact、microcompact、context collapse、autocompact、API 调用以及 tool loop 回写。</p>
+          <ul class="fact-list">
+            <li>输入：messages、system prompt、tools、MCP、permission context、budget、settings。</li>
+            <li>变换：上下文压缩、提示重写、预算裁剪、工具结果拼接。</li>
+            <li>输出：assistant 消息、tool requests、tool results、usage、compact 事件、状态更新。</li>
+            <li>错误恢复：compact、fallback、终止与中断传播都在这里交汇。</li>
+          </ul>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  A["进入 queryLoop"] --> B["memory prefetch / skill prefetch"]
+  B --> C["queryTracking(chainId / depth)"]
+  C --> D["applyToolResultBudget"]
+  D --> E["snip compact"]
+  E --> F["microcompact"]
+  F --> G["context collapse"]
+  G --> H["autocompact"]
+  H --> I["调用模型 API"]
+  I --> J{"是否产生 tool_use"}
+  J -- 否 --> K["处理 assistant / stop / retry / completion"]
+  J -- 是 --> L["进入工具执行层"]
+  L --> M["tool_result 回写消息流"]
+  M --> A</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>关键观察：</strong><code>query.ts</code> 的复杂度很大一部分来自长会话上下文治理，而不是模型 API 本身。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow4">流 4：tool use 执行链</h2>
+          <p>模型返回 <code>tool_use</code> 后，不是直接调用某个函数，而是进入工具编排系统：<code>StreamingToolExecutor</code> 负责流式场景下边收边执行，<code>toolOrchestration.ts</code> 负责并发安全分批，<code>toolExecution.ts</code> 负责 schema 校验、权限、hooks、telemetry、结果封装和回写。</p>
+          <ul class="check-list">
+            <li>工具定义在 <code>Tool.ts</code> / <code>tools.ts</code>，执行真正落在 <code>services/tools/*</code>。</li>
+            <li>并发不是默认允许的；工具元数据会影响调度批次。</li>
+            <li>执行结果不仅影响模型上下文，还会影响任务、UI、通知和日志。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow5">流 5：权限审批链</h2>
+          <p>权限判定并不只在 UI 层。<code>src/hooks/useCanUseTool.tsx</code> 显示它是一个异步判定管线，可能结合 permission rules、interactive handler、coordinator / swarm 路径、speculative classifier 和 sandbox 状态。真正的执行阶段还会再次把这些结论带入工具执行上下文。</p>
+          <ul class="fact-list">
+            <li>输入：工具类型、参数、用户模式、settings、permission rules、上下文状态。</li>
+            <li>分支：自动允许、自动拒绝、需要 UI 审批、需要 classifier/hook。</li>
+            <li>输出：decision reason、UI prompt、上下文更新、拒绝消息或继续执行。</li>
+          </ul>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant Query as query.ts
+  participant Orch as toolOrchestration.ts
+  participant Exec as toolExecution.ts
+  participant Gate as useCanUseTool.tsx / permissions.ts
+  participant UI as components/permissions/*
+  participant Tool as actual tool implementation
+  participant State as AppState / notifications / tasks
+
+  Query->>Orch: 收到 tool_use
+  Orch->>Orch: 按 isConcurrencySafe() 分批
+  Orch->>Exec: runToolUse(...)
+  Exec->>Gate: 检查 rules / classifier / hook / sandbox
+  alt 自动允许
+    Gate-->>Exec: allow
+  else 需要交互审批
+    Gate->>UI: 展示权限请求
+    UI-->>Gate: 用户决定 + 可选持久化
+    Gate-->>Exec: allow / deny + reason
+  else 自动拒绝
+    Gate-->>Exec: deny + reason
+  end
+  alt allowed
+    Exec->>Tool: 校验输入并执行
+    Tool-->>Exec: result / progress / error
+    Exec-->>State: task update / telemetry / notifications
+    Exec-->>Query: tool_result
+  else denied
+    Exec-->>Query: denied tool_result / message
+  end</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/services/tools/toolOrchestration.ts</code>、<code>src/services/tools/toolExecution.ts</code>、<code>src/hooks/useCanUseTool.tsx</code>、<code>src/utils/permissions/*</code>、<code>src/components/permissions/*</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>tool use 不是“模型直接调函数”，而是一条包含调度、权限、UI、任务与状态回写的执行协议。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow6">流 6：agent 与任务链</h2>
+          <p><code>src/tools/AgentTool/runAgent.ts</code> 表明子 agent 的创建会触发技能预加载、agent 特定 MCP 配置、subagent context 构造、sidechain transcript 记录以及最终清理。这使 agent 更像“带资源边界的子运行时”，而不是单纯函数调用。</p>
+          <div class="question-box">当你修改 agent 或 task 相关代码时，要同时问：transcript、MCP、hooks、任务列表和清理路径是否还闭合？</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="dataflow-diagram">数据流图</h2>
+          <p>这张图从数据对象角度解释一次 turn：消息、上下文、工具结果、持久化和 UI 状态是怎样同时流动的。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  USER["用户输入 / slash command"] --> SUBMIT["handlePromptSubmit.ts"]
+  SUBMIT --> MSGS["messages[]"]
+  CONTEXT["effective system prompt + user/system context"] --> QUERY["query.ts"]
+  TOOLS["local tools from tools.ts"] --> QUERY
+  MCPTOOLS["MCP tools / resources"] --> QUERY
+  PERMCTX["ToolPermissionContext"] --> QUERY
+  SETTINGS["settings + budget + feature gates"] --> QUERY
+  MSGS --> QUERY
+  QUERY --> MODELREQ["Anthropic request in claude.ts"]
+  MODELREQ --> MODELRESP["assistant delta / tool_use / stop reason"]
+  MODELRESP --> QUERY
+  QUERY --> TOOLREQ["tool request batch"]
+  TOOLREQ --> TOOLEXEC["services/tools/*"]
+  TOOLEXEC --> TOOLRESULT["tool_result / progress / attachments"]
+  TOOLRESULT --> QUERY
+  QUERY --> TRANSCRIPT["transcript / persisted history"]
+  QUERY --> APPSTATE["AppState / UI / notifications / tasks"]
+  APPSTATE --> USER</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/utils/handlePromptSubmit.ts</code>、<code>src/query.ts</code>、<code>src/services/api/claude.ts</code>、<code>src/services/tools/*</code>、<code>src/state/*</code>、<code>src/QueryEngine.ts</code> 中 transcript 相关逻辑。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>工具结果不仅回到模型，还回到任务、通知和 UI；这就是为什么工具调用的副作用面远大于普通函数返回值。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="flow-files">建议一起打开的文件</h2>
+          <div class="file-card">
+            <h4><code>src/screens/REPL.tsx</code></h4>
+            <p>看 REPL 路径如何直达 <code>query()</code>，以及为什么提交前要刷新 tools/MCP。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/QueryEngine.ts</code></h4>
+            <p>看会话级语义、transcript 预写和 headless 路径的职责。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/query.ts</code></h4>
+            <p>看 turn 级状态机如何处理 compact、budget、tool loop 和恢复。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/services/tools/toolExecution.ts</code></h4>
+            <p>看工具执行为什么会同时牵涉权限、日志、结果存储和进度消息。</p>
+          </div>
+        </section>
+
+        <div class="next-prev">
+          <a href="runtime.html">← 上一页：运行与启动</a>
+          <a href="config-build.html">下一页：配置与构建 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="assets/mermaid-init.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

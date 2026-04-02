@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="evaluation">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>设计评估</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索风险与技术债"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">评估</div>
+          <h2>强在平台化与治理，弱在顶层装配复杂度、隐式耦合和 feature 矩阵膨胀</h2>
+          <p>这套代码已经具备产品级终端 agent 平台的关键能力，但这些能力几乎都在同一棵运行内核里叠加，导致顶层装配和横切依赖越来越重。真正的风险不是“代码不高级”，而是“组合复杂度越来越难被局部理解”。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>这套架构真正强在哪里？</li>
+            <li>哪些设计是有意识的 trade-off，而不是偶然堆出来的？</li>
+            <li>最危险的复杂度热点在哪里？</li>
+            <li>未来改动时，哪些区域最容易引入回归？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="strengths">架构优势</h2>
+          <ul class="check-list">
+            <li><strong>共享内核清晰：</strong><code>query.ts</code> 作为共享执行内核，让 REPL 与 headless 路径至少在 turn 逻辑上复用同一机制。</li>
+            <li><strong>产品治理意识强：</strong>permissions、classifier、sandbox、cleanup、profiling、migration、transcript 恢复等都不是后补丁，而是执行链的一部分。</li>
+            <li><strong>扩展通路明确：</strong>plugins、MCP、skills 三条路径虽然分开，但边界意图清晰，各自面向不同问题域。</li>
+            <li><strong>恢复性设计存在：</strong><code>QueryEngine</code> 预写 transcript、REPL 提交前刷新工具集、任务/agent 有清理路径，说明作者在为长会话和异常中断做设计。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="tradeoffs">主要 trade-offs</h2>
+          <ul class="fact-list">
+            <li><strong>选择显式上下文而非 IoC：</strong>好处是调用链透明、类型可见；代价是 <code>ToolUseContext</code> 和 <code>AppState</code> 容易膨胀成巨型接口。</li>
+            <li><strong>选择单体运行时而非服务拆分：</strong>好处是交互延迟和本地能力整合更自然；代价是顶层装配复杂、跨层依赖变多。</li>
+            <li><strong>选择大量 feature gate：</strong>好处是同一代码库承载多产品形态；代价是测试矩阵和行为推理成本急剧增加。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="weaknesses">主要弱点</h2>
+          <ul class="fact-list">
+            <li><code>src/main.tsx</code>、<code>src/commands.ts</code>、<code>src/tools.ts</code>、<code>src/screens/REPL.tsx</code> 都是明显的复杂度中心，承担的装配责任已经接近产品级路由器。</li>
+            <li><code>src/utils/*</code> 体量巨大，容易继续吸收新的横切逻辑，削弱模块边界。</li>
+            <li><code>AppState</code> 与 <code>ToolUseContext</code> 过重，使局部修改经常牵动多个系统。</li>
+            <li><code>feature('...')</code> 与动态加载共同导致“代码存在但未必可达”的情况增加，提升阅读和测试难度。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="hidden-constraints">隐藏约束</h2>
+          <ul class="check-list">
+            <li>transcript 必须在进入真正模型循环前写入，否则 headless 恢复语义会变弱。</li>
+            <li>REPL 必须在提交前重新读取 tools/MCP，否则长期运行组件会持有过期能力集合。</li>
+            <li>工具默认不是并发安全、不是只读，这会直接影响调度策略和权限压力。</li>
+            <li>MCP server 是否可见不仅取决于本地配置，还受企业/托管设置和 connector 去重影响。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="risk-zones">最难安全修改的区域</h2>
+          <div class="file-card">
+            <h4><code>src/query.ts</code></h4>
+            <p>牵涉模型流、compact、tool_use、budget、fallback，任何改动都可能改变 turn 级语义。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/services/tools/toolExecution.ts</code></h4>
+            <p>工具执行与权限、hooks、telemetry、tool result storage 的交汇点，容易产生“局部看合理、全局出回归”的问题。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>src/screens/REPL.tsx</code></h4>
+            <p>运行态总集成壳，局部改动极易对消息流、任务、通知或 compact 产生副作用。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="tech-debt">技术债判断</h2>
+          <p>最大的技术债不是代码风格，而是<strong>产品能力叠加带来的组合复杂度</strong>：</p>
+          <ul class="check-list">
+            <li>命令来源越来越多，聚合器越来越重。</li>
+            <li>工具类型越来越多，权限与并发治理更难统一推理。</li>
+            <li>运行模式越来越多，启动与配置分支更难穷举验证。</li>
+            <li>扩展通路越来越多，插件、MCP、skills 之间的边界需要持续维护。</li>
+          </ul>
+        </section>
+
+        <div class="next-prev">
+          <a href="understanding-memory.html">← 上一页：交互深潜</a>
+          <a href="learning-path.html">下一页：学习路径 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

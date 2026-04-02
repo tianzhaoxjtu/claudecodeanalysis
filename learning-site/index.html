@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="home">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand">
+          <div class="brand-mark">CC</div>
+          <div>
+            <h1>ClaudeCode Source Analysis</h1>
+            <p>面向工程学习者的终端智能体源码导读</p>
+          </div>
+        </div>
+        <div class="search-box">
+          <input id="searchInput" type="search" placeholder="搜索页面或主题，例如 QueryEngine、权限、MCP">
+          <div id="searchResults" class="search-results"></div>
+        </div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>本页目录</h2>
+        <div id="toc"></div>
+      </aside>
+
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">总览</div>
+          <h2>核心不是“会聊天”，而是“如何把终端智能体做成一个长期运行的产品内核”</h2>
+          <p>当前可见源码显示，这个仓库把启动、REPL、命令、工具、权限、任务、扩展、远程和状态治理全部放进同一套终端运行时。最关键的判断是：<code>query()</code> 才是真正共享的执行内核；REPL 和 SDK/headless 只是进入它的两条不同壳层。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="what">你会在这里学到什么</h2>
+          <div class="grid">
+            <a class="card-link" href="architecture.html">
+              <strong>整体架构</strong>
+              理解它如何从 CLI 演化成带权限、扩展和多运行模式的终端平台。
+            </a>
+            <a class="card-link" href="runtime.html">
+              <strong>启动与生命周期</strong>
+              弄清楚 <code>main.tsx</code>、<code>setup.ts</code>、<code>init.ts</code> 与 <code>launchRepl</code> 的职责边界。
+            </a>
+            <a class="card-link" href="flows.html">
+              <strong>关键执行流</strong>
+              把 REPL 路径和 SDK 路径各自如何进入 <code>query()</code> 走通。
+            </a>
+            <a class="card-link" href="evaluation.html">
+              <strong>风险与技术债</strong>
+              识别真正难改的地方，以及为什么难改。
+            </a>
+            <a class="card-link" href="understanding-memory.html">
+              <strong>交互深潜</strong>
+              深入看清输入预处理、工具编排、memory 层与 Dream 如何共同构成 ClaudeCode 的上下文工程内核。
+            </a>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="boundary">分析边界</h2>
+          <div class="callout">
+            <strong>事实边界：</strong>当前目录不是完整 Git 仓库，只能确认 <code>src/</code> 源码树与我们生成的分析产物。根级依赖、CI、完整测试结构、发布脚本在当前快照中不可见。
+          </div>
+          <ul class="fact-list">
+            <li>已确认使用 TypeScript / TSX、Bun、React/Ink、Zod、Anthropic SDK、MCP SDK。</li>
+            <li>已确认 REPL 交互路径直接调用 <code>query()</code>，而 <code>QueryEngine</code> 更偏 SDK/headless façade。</li>
+            <li>已确认存在命令系统、工具系统、任务系统、权限系统、插件、skills、MCP、远程会话。</li>
+            <li>未确认完整构建命令、完整测试组织、完整 CI 流水线。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="shape">系统轮廓</h2>
+          <p>最重要的不是文件夹，而是这四条支撑性判断：</p>
+          <ul class="check-list">
+            <li><code>main.tsx</code>、<code>setup.ts</code>、<code>init.ts</code> 共同定义启动边界，而不是单一入口函数包办一切。</li>
+            <li><code>query.ts</code> 是共享执行内核；<code>QueryEngine</code> 和 REPL 只是两种进入方式。</li>
+            <li><code>toolExecution.ts</code> 与 <code>useCanUseTool.tsx</code> 说明工具调用本质上是“可审批的执行协议”。</li>
+            <li><code>AppState</code> 和 <code>ToolUseContext</code> 是系统最关键的两个跨层粘合抽象。</li>
+            <li><code>pluginLoader.ts</code>、<code>mcp/client.ts</code>、<code>loadSkillsDir.ts</code> 不是同类机制，而是三条扩展轴。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="priorities">建议优先回答的五个问题</h2>
+          <div class="question-box">1. 程序为什么要拆成 <code>main.tsx</code>、<code>setup.ts</code>、<code>entrypoints/init.ts</code> 三段启动？</div>
+          <div class="question-box">2. 为什么 REPL 不走 <code>QueryEngine</code>，而是直接调用 <code>query()</code>？</div>
+          <div class="question-box">3. <code>ToolUseContext</code> 为什么会变成一个重量级应用协议，而不是轻量参数对象？</div>
+          <div class="question-box">4. 为什么权限系统必须跨 settings、tool execution、hooks、classifier 和 UI 多层协作？</div>
+          <div class="question-box">5. 插件、MCP、skills 为什么必须分三条扩展通路，而不是并进一个统一插件接口？</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="start">从哪里开始</h2>
+          <div class="grid">
+            <a class="card-link" href="runtime.html">
+              <strong>第一站：运行与启动</strong>
+              先建立生命周期心智模型。
+            </a>
+            <a class="card-link" href="flows.html">
+              <strong>第二站：关键执行流</strong>
+              把查询与工具执行链路走通。
+            </a>
+            <a class="card-link" href="modules.html">
+              <strong>第三站：模块拆解</strong>
+              再回头看 commands、tools、state、tasks、extensions。
+            </a>
+          </div>
+        </section>
+
+        <div class="next-prev">
+          <span></span>
+          <a href="architecture.html">下一页：架构概览 →</a>
+        </div>
+        <div class="footer-note">本学习站按“先主链路、后模块、再评估”的方式组织，适合工程师 onboarding 与架构复盘。</div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

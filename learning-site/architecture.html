@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="architecture">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand">
+          <div class="brand-mark">CC</div>
+          <div><h1>ClaudeCode Source Analysis</h1><p>架构概览</p></div>
+        </div>
+        <div class="search-box">
+          <input id="searchInput" type="search" placeholder="搜索架构主题">
+          <div id="searchResults" class="search-results"></div>
+        </div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">架构</div>
+          <h2>一套以 REPL 为交互壳、以 <code>query()</code> 为共享执行内核、以权限与任务系统做治理的终端智能体平台</h2>
+          <p>真正要抓住的不是“哪个目录放了什么”，而是三层关系：谁负责装配，谁负责执行，谁负责治理。当前代码最重要的事实是：<code>query.ts</code> 才是共享执行内核，<code>QueryEngine</code> 更像 headless façade，而 REPL 还有自己的一层交互编排。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>这个仓库到底是 CLI、SDK，还是终端产品运行时？</li>
+            <li>哪些模块是真正的“层”，哪些只是装配点？</li>
+            <li>为什么说它更像模块化单体，而不是严格分层系统？</li>
+            <li>阅读这套代码时，哪些抽象值得当成架构锚点？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="system-diagram">系统架构图</h2>
+          <p>这张图展示的是“谁负责装配、谁负责执行、谁负责治理”的真实结构，不是目录树。最关键的代码事实是：<code>src/query.ts</code> 位于中心，而 REPL 与 <code>QueryEngine</code> 只是进入它的两种外壳。</p>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TB
+  subgraph BOOT["入口与生命周期层"]
+    MAIN["src/main.tsx"]
+    SETUP["src/setup.ts"]
+    INIT["src/entrypoints/init.ts"]
+  end
+
+  subgraph SHELL["交互壳层"]
+    REPL["src/screens/REPL.tsx"]
+    UI["src/components/* / src/interactiveHelpers.tsx"]
+  end
+
+  subgraph CORE["共享执行内核"]
+    QE["src/QueryEngine.ts"]
+    QUERY["src/query.ts"]
+    API["src/services/api/claude.ts"]
+  end
+
+  subgraph TOOLING["工具与任务层"]
+    TOOLREG["src/tools.ts / src/Tool.ts"]
+    TOOLSVC["src/services/tools/*"]
+    TASKS["src/Task.ts / src/tasks/* / src/tools/AgentTool/*"]
+  end
+
+  subgraph GOV["治理与扩展层"]
+    PERM["src/utils/permissions/* / src/hooks/useCanUseTool.tsx"]
+    STATE["src/state/AppStateStore.ts / src/state/AppState.tsx"]
+    MCP["src/services/mcp/*"]
+    PLUG["src/utils/plugins/*"]
+    SKILLS["src/skills/*"]
+    CONF["src/utils/settings/* / src/utils/config.ts"]
+  end
+
+  MAIN --> SETUP
+  MAIN --> INIT
+  MAIN --> REPL
+  MAIN --> QE
+  MAIN --> TOOLREG
+  MAIN --> MCP
+  MAIN --> PLUG
+  MAIN --> SKILLS
+  MAIN --> CONF
+
+  UI --> REPL
+  REPL --> QUERY
+  QE --> QUERY
+  QUERY --> API
+  QUERY --> TOOLSVC
+  TOOLREG --> TOOLSVC
+  TOOLSVC --> TASKS
+  TOOLSVC --> PERM
+  REPL --> STATE
+  QE --> STATE
+  TOOLSVC --> STATE
+  CONF --> PERM
+  CONF --> MCP</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/main.tsx</code>、<code>src/setup.ts</code>、<code>src/entrypoints/init.ts</code>、<code>src/screens/REPL.tsx</code>、<code>src/QueryEngine.ts</code>、<code>src/query.ts</code>、<code>src/services/tools/*</code>、<code>src/state/*</code>、<code>src/services/mcp/*</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>这是模块化单体，不是强隔离服务架构；工具层同时连到任务、权限和状态，说明它是执行协议层而非 util 层。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="layers">建议的理解分层</h2>
+          <div class="file-card">
+            <h4>入口与生命周期层</h4>
+            <p><code>src/main.tsx</code>、<code>src/setup.ts</code>、<code>src/entrypoints/init.ts</code>。负责进程入口、会话准备、模式分流与基础设施初始化。</p>
+          </div>
+          <div class="file-card">
+            <h4>交互壳层</h4>
+            <p><code>src/screens/REPL.tsx</code>、<code>src/components/*</code>、<code>src/interactiveHelpers.tsx</code>。负责终端 UI、输入提交、权限弹窗与运行态集成。</p>
+          </div>
+          <div class="file-card">
+            <h4>查询执行层</h4>
+            <p><code>src/QueryEngine.ts</code>、<code>src/query.ts</code>、<code>src/services/api/claude.ts</code>。其中 <code>query.ts</code> 是共享执行内核，<code>QueryEngine</code> 负责 headless/SDK 路径的会话外壳。</p>
+          </div>
+          <div class="file-card">
+            <h4>工具与任务层</h4>
+            <p><code>src/tools.ts</code>、<code>src/Tool.ts</code>、<code>src/services/tools/*</code>、<code>src/Task.ts</code>、<code>src/tasks/*</code>。负责模型可调用能力、工具编排、后台任务与 agent 运行。</p>
+          </div>
+          <div class="file-card">
+            <h4>扩展与治理层</h4>
+            <p><code>src/services/mcp/*</code>、<code>src/utils/plugins/*</code>、<code>src/skills/*</code>、<code>src/utils/permissions/*</code>、<code>src/utils/settings/*</code>。负责能力接入、配置、权限和产品治理。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="principles">governing ideas</h2>
+          <ul class="check-list">
+            <li><strong>共享内核，多入口壳：</strong>REPL 和 headless/SDK 最终都进入 <code>query()</code>，但前置上下文装配不同。</li>
+            <li><strong>上下文显式传递，而非 IoC：</strong>代码大量依赖 <code>ToolUseContext</code>、<code>AppState</code>、settings 和 runtime context，而不是容器式依赖注入。</li>
+            <li><strong>安全治理内嵌执行链：</strong>权限系统并不是执行末端的确认框，而是工具执行协议的一部分。</li>
+            <li><strong>产品形态共存：</strong>大量 <code>feature('...')</code> 表明同一代码库承载多种版本和运行模式。</li>
+            <li><strong>模块边界逻辑清楚、物理不严：</strong>职责分层明显，但跨层协作频繁，属于模块化单体而非强隔离架构。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="boundaries">为什么说它是“模块化单体”</h2>
+          <p>从目录命名看，它像一套分层系统；但从真实调用关系看，<code>REPL.tsx</code> 会直接触达 query、tools、permissions、MCP、tasks、notifications，<code>commands.ts</code> 和 <code>tools.ts</code> 也承担跨来源装配职责。边界存在，但不是靠进程隔离、服务接口或严格的单向依赖来保证，而是靠上下文对象、约定和 feature gate 维持。</p>
+          <div class="callout">
+            <strong>阅读提示：</strong>如果把这套代码当成传统前后端分离项目去理解，很容易误判职责。更准确的视角是“一个终端产品运行时 + 一个共享 query 内核 + 多条能力接入管线”。
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="anchors">两个架构锚点</h2>
+          <div class="file-card">
+            <h4><code>AppState</code></h4>
+            <p>它不是狭义 UI state，而是应用运行态容器。任务、MCP、plugins、notifications、session hooks、prompt suggestion、file history 都挂在这里。</p>
+          </div>
+          <div class="file-card">
+            <h4><code>ToolUseContext</code></h4>
+            <p>它是工具层访问应用能力的主要协议。工具之所以能触达任务、MCP、状态、通知、UI，是因为这些能力被放进了同一个上下文对象。</p>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="hotspots">复杂度热点</h2>
+          <ul class="fact-list">
+            <li><code>src/main.tsx</code>：产品模式与入口装配中心。</li>
+            <li><code>src/commands.ts</code>：命令来源聚合器，不只是 command list。</li>
+            <li><code>src/tools.ts</code>：工具来源聚合器与启用条件中心。</li>
+            <li><code>src/screens/REPL.tsx</code>：UI 与运行态总集成壳。</li>
+            <li><code>src/query.ts</code>：上下文治理、compact、tool loop、budget 的真实状态机。</li>
+            <li><code>src/utils/*</code>：横切基础设施超级层，吸收了大量治理逻辑。</li>
+          </ul>
+        </section>
+
+        <div class="next-prev">
+          <a href="index.html">← 上一页：总览</a>
+          <a href="modules.html">下一页：模块拆解 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="assets/mermaid-init.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="learning">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>学习路径</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索学习主题"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">学习路径</div>
+          <h2>不要试图一次看完整仓，先建立“可改动、可排障、可扩展”的心智模型</h2>
+          <p>这条路线假设读者已经是资深工程师。目标不是记住目录，而是在有限时间内得到足够强的结构理解，能够安全进入修改和排障。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>第一次读这套代码，先看哪里最值钱？</li>
+            <li>什么时候该看启动，什么时候该直接看 query 内核？</li>
+            <li>怎样避免在 REPL 和 utils 海里迷路？</li>
+            <li>每个阶段结束后，自己应该能回答哪些问题？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="phase1">阶段 1：建立启动与产品轮廓</h2>
+          <ul class="check-list">
+            <li>看 <code>src/main.tsx</code></li>
+            <li>看 <code>src/setup.ts</code></li>
+            <li>看 <code>src/entrypoints/init.ts</code></li>
+            <li>补看 <code>src/replLauncher.tsx</code> 与 <code>src/interactiveHelpers.tsx</code></li>
+          </ul>
+          <div class="question-box">阶段目标：你应该能回答程序如何启动、REPL 如何落地、环境准备为什么要独立成层。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="phase2">阶段 2：吃透共享执行内核</h2>
+          <ul class="check-list">
+            <li>看 <code>src/QueryEngine.ts</code></li>
+            <li>看 <code>src/query.ts</code></li>
+            <li>看 <code>src/services/api/claude.ts</code></li>
+          </ul>
+          <div class="question-box">阶段目标：你应该能清楚区分 REPL 路径和 headless/SDK 路径，并说清 <code>QueryEngine</code> 与 <code>query()</code> 的职责边界。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="phase3">阶段 3：理解工具、权限与任务如何闭环</h2>
+          <ul class="check-list">
+            <li>看 <code>src/tools.ts</code> 与 <code>src/Tool.ts</code></li>
+            <li>看 <code>src/services/tools/toolOrchestration.ts</code>、<code>StreamingToolExecutor.ts</code>、<code>toolExecution.ts</code></li>
+            <li>看 <code>src/hooks/useCanUseTool.tsx</code> 与 <code>src/utils/permissions/*</code></li>
+            <li>看 <code>src/Task.ts</code> 与一个代表性任务实现，例如 <code>LocalShellTask.tsx</code></li>
+          </ul>
+          <div class="question-box">阶段目标：你应该能回答一个 tool_use 从模型输出到实际执行、权限审批、结果回写和任务更新的完整路径。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="phase4">阶段 4：理解 REPL 与运行态集成</h2>
+          <ul class="check-list">
+            <li>看 <code>src/screens/REPL.tsx</code></li>
+            <li>看 <code>src/utils/handlePromptSubmit.ts</code></li>
+            <li>看 <code>src/state/AppState.tsx</code> 与 <code>AppStateStore.ts</code></li>
+          </ul>
+          <div class="question-box">阶段目标：你应该能回答 REPL 为什么是复杂度热点，以及 <code>AppState</code> 为什么比普通前端 state 更像运行时容器。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="phase5">阶段 5：理解扩展与多 agent</h2>
+          <ul class="check-list">
+            <li>看 <code>src/utils/plugins/pluginLoader.ts</code> 与 <code>loadPluginCommands.ts</code></li>
+            <li>看 <code>src/services/mcp/config.ts</code> 与 <code>client.ts</code></li>
+            <li>看 <code>src/skills/loadSkillsDir.ts</code></li>
+            <li>看 <code>src/tools/AgentTool/runAgent.ts</code></li>
+          </ul>
+          <div class="question-box">阶段目标：你应该能解释插件、MCP、skills 为什么必须区分，以及子 agent 为什么像“带资源边界的子运行时”。</div>
+        </section>
+
+        <div class="next-prev">
+          <a href="evaluation.html">← 上一页：设计评估</a>
+          <a href="files-glossary.html">下一页：关键文件与术语 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

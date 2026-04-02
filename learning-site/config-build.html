@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="config">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>配置、构建与质量机制</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索配置或测试主题"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">配置与构建</div>
+          <h2>当前快照更能证明“配置治理方式”，难以完整证明“根级构建体系”</h2>
+          <p>在当前可见源码中，settings、permission rules、managed settings、MCP config、plugin cache 这些都很清楚；反而根级构建脚本和测试结构不可见。所以这页重点解释“已经确认的治理机制”和“必须保留不确定性的地方”。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="questions">本页回答什么问题</h2>
+          <ul class="check-list">
+            <li>配置是如何组织、校验和合并的？</li>
+            <li>权限规则和 settings 有什么特殊处理顺序？</li>
+            <li>MCP 配置合并背后的优先级和去重策略是什么？</li>
+            <li>当前快照能证明哪些质量机制，不能证明哪些？</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="settings">settings 系统</h2>
+          <p><code>src/utils/settings/settings.ts</code> 与 <code>src/utils/settings/types.ts</code> 构成统一 settings 层。它不是简单读配置文件，而是支持多 source、缓存、managed settings base file + drop-ins、schema 校验和某些字段的预处理。</p>
+          <ul class="fact-list">
+            <li>已确认：大量字段通过 Zod schema 约束。</li>
+            <li>已确认：支持多种 settings source 与缓存策略。</li>
+            <li>已确认：permission rules 在正式 schema 校验前就存在预过滤逻辑，说明作者知道旧格式/非法规则很常见且需要兼容处理。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="config-runtime">运行时配置模型</h2>
+          <p><code>src/utils/config.ts</code> 中的 <code>GlobalConfig</code> 与 <code>ProjectConfig</code> 表明配置不仅服务启动，还承载运行态信息，例如最近会话指标、MCP server 状态、worktree session、remote control 模式等。这让“配置”和“状态”在某些区域发生重叠，也解释了为什么配置层会变得比普通 CLI 更重。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="mcp-config">MCP 配置优先级</h2>
+          <p><code>src/services/mcp/config.ts</code> 的 <code>getAllMcpConfigs()</code> 暗示了一条非平凡合并链：既要处理企业/托管 settings，又要处理本地与手动服务器，还要对 claude.ai connector 做去重。这个实现说明 MCP 对产品来说不是“附加插件”，而是和权限、账户、托管配置都有关联的一等能力通道。</p>
+          <div class="callout"><strong>隐藏约束：</strong>MCP server 的可见性不是单纯由本地配置决定，还受到托管设置、企业模式和 connector 去重策略影响。</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="feature-gates">feature gates 与环境分岔</h2>
+          <p><code>feature('...')</code> 是当前可见代码中最常见的环境分岔机制。它既像构建期开关，也像产品能力矩阵。这带来两个后果：一是单份源码可以承载多种发行形态，二是阅读任何模块都必须同时问“它在什么形态下才会被启用”。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="quality">当前能确认的质量机制</h2>
+          <ul class="check-list">
+            <li><strong>Schema 校验：</strong>settings、permissions、plugins、MCP 配置都有明确 schema 或等价验证路径。</li>
+            <li><strong>迁移：</strong><code>src/migrations/*</code> 说明历史兼容被认真维护。</li>
+            <li><strong>遥测与诊断：</strong>startup profiler、query profiler、session tracing、analytics 日志大量存在。</li>
+            <li><strong>清理与恢复：</strong>cleanup registry、graceful shutdown、terminal 恢复、worktree 状态恢复都清晰可见。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="unknowns">关于构建、测试与 CI 的谨慎结论</h2>
+          <div class="callout"><strong>重要：</strong>当前快照中几乎看不到测试组织，也看不到根级构建配置。最稳妥的说法不是“它没有测试”，而是“当前可见快照无法证明其完整测试、CI 与发布体系”。</div>
+          <p>尽管如此，从代码痕迹仍可确认一些工程约束：</p>
+          <ul class="fact-list">
+            <li>Bun feature gates 明确存在。</li>
+            <li>React Compiler 转换痕迹存在于部分文件。</li>
+            <li>代码中出现 Biome / ESLint 风格规则注释，说明静态检查工具很可能参与过开发流程。</li>
+          </ul>
+        </section>
+
+        <div class="next-prev">
+          <a href="flows.html">← 上一页：执行流</a>
+          <a href="understanding-memory.html">下一页：交互深潜 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

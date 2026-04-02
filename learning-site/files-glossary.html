@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClaudeCode Source Analysis</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-page="files">
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand"><div class="brand-mark">CC</div><div><h1>ClaudeCode Source Analysis</h1><p>关键文件与术语</p></div></div>
+        <div class="search-box"><input id="searchInput" type="search" placeholder="搜索文件或术语"><div id="searchResults" class="search-results"></div></div>
+      </div>
+      <nav class="topnav">
+        <a href="index.html" data-page="home">总览</a>
+        <a href="architecture.html" data-page="architecture">架构</a>
+        <a href="modules.html" data-page="modules">模块</a>
+        <a href="runtime.html" data-page="runtime">运行与启动</a>
+        <a href="flows.html" data-page="flows">执行流</a>
+        <a href="config-build.html" data-page="config">配置与构建</a>
+        <a href="understanding-memory.html" data-page="understanding">交互深潜</a>
+        <a href="evaluation.html" data-page="evaluation">设计评估</a>
+        <a href="learning-path.html" data-page="learning">学习路径</a>
+        <a href="files-glossary.html" data-page="files">关键文件与术语</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside class="sidebar"><h2>本页目录</h2><div id="toc"></div></aside>
+      <main class="content">
+        <section class="hero">
+          <div class="eyebrow">索引</div>
+          <h2>把高价值文件和关键术语固定下来，后续阅读会快很多</h2>
+          <p>这页适合作为长期书签页。每次你忘记“某个核心抽象定义在哪”或“某条链路应该从哪读起”，可以先回到这里。</p>
+        </section>
+
+        <section class="content-card">
+          <h2 id="key-files">关键文件索引</h2>
+          <div class="file-card"><h4><code>src/main.tsx</code></h4><p>主入口与高层装配中心，决定产品模式、命令/工具装配和运行路径分流。</p></div>
+          <div class="file-card"><h4><code>src/setup.ts</code></h4><p>会话环境准备层，负责 cwd、hook、worktree、tmux、terminal 恢复等运行前提。</p></div>
+          <div class="file-card"><h4><code>src/entrypoints/init.ts</code></h4><p>基础设施初始化层，负责 settings、安全环境变量、网络、OAuth、scratchpad 等。</p></div>
+          <div class="file-card"><h4><code>src/replLauncher.tsx</code></h4><p>REPL 渲染入口桥，衔接高层装配和交互界面启动。</p></div>
+          <div class="file-card"><h4><code>src/interactiveHelpers.tsx</code></h4><p>交互辅助逻辑聚合点，帮助理解 REPL 入口附近的 UI 编排。</p></div>
+          <div class="file-card"><h4><code>src/commands.ts</code></h4><p>命令来源聚合器，统一 built-in、workflow、skills、plugin commands。</p></div>
+          <div class="file-card"><h4><code>src/tools.ts</code></h4><p>工具全集定义与按 feature / 环境装配的中心。</p></div>
+          <div class="file-card"><h4><code>src/Tool.ts</code></h4><p>工具协议定义地，<code>ToolUseContext</code> 和 <code>buildTool()</code> 默认行为都在这里。</p></div>
+          <div class="file-card"><h4><code>src/QueryEngine.ts</code></h4><p>会话级 façade，负责 transcript、usage、abort 和 headless 路径语义。</p></div>
+          <div class="file-card"><h4><code>src/query.ts</code></h4><p>turn 级共享执行内核，负责 compact、budget、API 调用和 tool loop。</p></div>
+          <div class="file-card"><h4><code>src/hooks/useCanUseTool.tsx</code></h4><p>权限判定入口之一，能看清 rules、classifier、interactive handler 怎样组合。</p></div>
+          <div class="file-card"><h4><code>src/services/tools/toolExecution.ts</code></h4><p>工具执行总调度点，权限、hooks、telemetry 和结果封装都汇聚于此。</p></div>
+          <div class="file-card"><h4><code>src/services/mcp/config.ts</code></h4><p>MCP 配置合并与去重中心，能看清企业/托管优先级。</p></div>
+          <div class="file-card"><h4><code>src/utils/plugins/pluginLoader.ts</code></h4><p>插件安装、校验、缓存和 marketplace 路径治理中心。</p></div>
+          <div class="file-card"><h4><code>src/tools/AgentTool/runAgent.ts</code></h4><p>子 agent 运行时装配点，适合观察 transcript、MCP、skills、cleanup 如何组合。</p></div>
+          <div class="file-card"><h4><code>src/screens/REPL.tsx</code></h4><p>最大集成壳，运行态复杂度热点，也是理解真实产品行为的关键窗口。</p></div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="glossary">术语表</h2>
+          <div class="file-card"><h4>REPL</h4><p>终端交互主界面，不只是文本输入框，而是集成 query、任务、权限、通知和消息渲染的运行壳。</p></div>
+          <div class="file-card"><h4>QueryEngine</h4><p>会话级 façade，负责 headless/SDK 路径下的 transcript、usage、abort 和恢复语义；它不是唯一执行入口。</p></div>
+          <div class="file-card"><h4><code>query()</code></h4><p>共享执行内核，真正的 turn 级状态机；REPL 与 QueryEngine 都会进入这里。</p></div>
+          <div class="file-card"><h4>ToolUseContext</h4><p>工具执行上下文，是工具层和应用层之间最关键的协议之一。</p></div>
+          <div class="file-card"><h4>AppState</h4><p>统一运行态容器，包含 UI、任务、MCP、插件、notifications、prompt suggestion 等。</p></div>
+          <div class="file-card"><h4>Skill</h4><p>markdown/frontmatter 驱动的 prompt command，偏流程知识与提示复用。</p></div>
+          <div class="file-card"><h4>MCP</h4><p>外部能力协议层，可提供 tools、resources、prompts、auth，属于一等扩展通道。</p></div>
+          <div class="file-card"><h4>Worktree</h4><p>用于隔离 agent 或 session 执行环境的 git 工作树，也是安全与并行执行策略的一部分。</p></div>
+        </section>
+
+        <div class="next-prev">
+          <a href="learning-path.html">← 上一页：学习路径</a>
+          <a href="index.html">回到首页 →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="assets/search-index.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
