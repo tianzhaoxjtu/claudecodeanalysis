@@ -371,6 +371,10 @@ pre {
   overflow: auto;
 }
 
+.diagram-render-host {
+  min-height: 120px;
+}
+
 .diagram-box svg {
   max-width: 100%;
   height: auto;
@@ -404,6 +408,87 @@ pre {
   background: #fff3ef;
   border: 1px solid rgba(143, 59, 27, 0.18);
   color: #7a3820;
+}
+
+.diagram-fallback {
+  display: grid;
+  gap: 14px;
+}
+
+.fallback-group {
+  border: 1px solid rgba(121, 94, 59, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px;
+}
+
+.fallback-group-title {
+  margin: 0 0 10px;
+  color: var(--brand);
+  font-size: 0.95rem;
+}
+
+.fallback-node-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.fallback-node-card,
+.sequence-participant {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(121, 94, 59, 0.16);
+  background: #fffdf8;
+  box-shadow: 0 6px 18px rgba(72, 54, 31, 0.05);
+  white-space: pre-line;
+}
+
+.fallback-edge-list,
+.sequence-events {
+  display: grid;
+  gap: 8px;
+}
+
+.fallback-edge-item,
+.sequence-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(180px, 1.2fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f7f1e7;
+  border: 1px solid rgba(121, 94, 59, 0.12);
+}
+
+.edge-endpoint,
+.sequence-endpoint {
+  font-weight: 600;
+  color: #2d2924;
+}
+
+.edge-arrow,
+.sequence-arrow {
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.edge-label,
+.sequence-text {
+  color: #514b43;
+}
+
+.sequence-participants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sequence-note {
+  grid-template-columns: 1fr;
+  color: #514b43;
+  font-style: italic;
 }
 
 .footer-note {
@@ -440,5 +525,10 @@ pre {
   .search-box {
     max-width: none;
     min-width: 0;
+  }
+
+  .fallback-edge-item,
+  .sequence-row {
+    grid-template-columns: 1fr;
   }
 }

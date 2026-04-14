@@ -42,6 +42,7 @@
             <li>工具不是函数表，而是怎样一种执行协议？</li>
             <li>ClaudeCode 如何在流式输出过程中并发执行工具，又保持 transcript 正确？</li>
             <li>Memory 为什么被拆成 memdir、session memory、agent memory 和 transcript 多层？</li>
+            <li>为什么这些 memory 机制更适合被理解成一个 Claude Code Memory OS，而不是几个零散功能？</li>
             <li>Dream 在系统里到底扮演什么角色，哪些结论是已确认事实，哪些仍是推断？</li>
           </ul>
         </section>
@@ -105,6 +106,44 @@
             <li><strong>投影与折叠：</strong><code>contextCollapse.applyCollapsesIfNeeded()</code> 在 autocompact 之前运行，尽量保留比 summary 更细的上下文粒度。</li>
             <li><strong>稳定前缀：</strong><code>fetchSystemPromptParts()</code>、<code>getUserContext()</code>、<code>getSystemContext()</code> 构造 cache-critical prefix，再由 <code>prependUserContext()</code> 与 <code>appendSystemContext()</code> 进入最终请求。</li>
           </ul>
+          <h3>1.6 错误处理、回退与工程取舍</h3>
+          <ul class="fact-list">
+            <li><strong>尽早短路：</strong>未知或不允许的 remote slash command 会直接返回本地提示，不把危险或无效命令继续泄漏给模型。</li>
+            <li><strong>错误语义修正：</strong><code>processBashCommand()</code> 会把 shell 中断识别成 user interruption，而不是普通工具错误。</li>
+            <li><strong>hook 限流：</strong><code>executeUserPromptSubmitHooks()</code> 的输出会经过截断处理，避免 hook 自己把上下文预算打爆。</li>
+            <li><strong>组合复杂度：</strong>这一层的弱点不是单点 bug，而是旗标组合很多，像 <code>skipSlashCommands</code>、<code>bridgeOrigin</code>、<code>isMeta</code>、<code>skipAttachments</code> 这些状态需要跨多个函数一起理解。</li>
+          </ul>
+
+          <h4>图示：从输入到主模型请求</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant U as User or Remote
+  participant H as handlePromptSubmit
+  participant E as executeUserInput
+  participant P as processUserInputBase
+  participant A as getAttachmentMessages
+  participant Q as query
+  participant M as callModel
+
+  U->>H: text / pasted refs / images / slash command
+  H->>H: expand refs / filter orphan images / enqueue or interrupt
+  H->>E: direct input or queuedCommands
+  E->>P: first command keeps attachments / later commands skipAttachments
+  P->>P: storeImages / resize / bridge-safe command gate / ultraplan rewrite
+  P->>A: collect repo / task / memory attachments
+  A-->>P: attachment messages
+  P->>P: bash / slash / text routing + UserPromptSubmit hooks
+  P-->>Q: newMessages + shouldQuery
+  Q->>Q: apply budget / snip / microcompact / collapse / autocompact
+  Q->>M: final context window</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图把“原始输入”变成“主模型请求”的路径拆成两段：前半段是输入编译，后半段是 <code>query()</code> 对活动窗口的预算治理与打包。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/utils/handlePromptSubmit.ts</code>、<code>src/utils/processUserInput/processUserInput.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/utils/queryContext.ts</code>、<code>src/query.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>真正送到主模型的已经不是用户原始输入，而是经历了引用展开、附件注入、hook 改写和窗口压缩之后的活动上下文。</p>
+          </div>
           <div class="callout"><strong>工程判断：</strong>ClaudeCode 把“能确定性完成的上下文工程”前移到代码侧，把真正需要推理的部分留给模型。这样做的收益是更稳的 prompt cache、更少的上下文噪声，以及更明确的安全边界。</div>
         </section>
 
@@ -170,49 +209,592 @@
 
         <section class="content-card">
           <h2 id="memory">3. Memory 记忆机制</h2>
-          <p>这一层不是“有没有 memory 文件夹”这么简单。ClaudeCode 把连续性拆成 durable memory、session summary、transcript recovery 和 execution cache 几个层次，每层解决不同时间尺度的问题。</p>
-          <h3>3.1 分层结构</h3>
+          <p>这一层不能简单理解成“严格三层 memory”。从代码看，ClaudeCode 更接近两套正交分类：一套是会被装入上下文的 file-based memory source，另一套是 session summary、agent memory、transcript、运行时缓存等连续性机制。源码里并没有一个官方的统一 layer count。</p>
+          <h3>3.1 memory 是怎么启用和初始化的</h3>
           <ul class="fact-list">
-            <li><strong>durable memory：</strong><code>src/memdir/*</code> 提供跨会话、文件化、按类型组织的 memory。</li>
-            <li><strong>session memory：</strong><code>src/services/SessionMemory/sessionMemory.ts</code> 维护当前会话的 markdown 摘要文件。</li>
-            <li><strong>transcript continuity：</strong><code>src/utils/sessionStorage.ts</code> / <code>sessionRestore.ts</code> 负责事实链持久化与恢复。</li>
-            <li><strong>agent memory：</strong><code>src/tools/AgentTool/agentMemory.ts</code> 等模块为子代理提供 user/project/local scope 记忆。</li>
-            <li><strong>execution caches：</strong><code>readFileState</code>、<code>contentReplacementState</code> 更像执行缓存而不是语义记忆。</li>
+            <li><strong>总开关：</strong><code>isAutoMemoryEnabled()</code> 位于 <code>src/memdir/paths.ts</code>，优先级链依次检查环境变量、<code>--bare</code>、remote 持久化能力、<code>settings.json</code> 的 <code>autoMemoryEnabled</code>，最后默认开启。</li>
+            <li><strong>子机制开关：</strong>extract-memories、session memory、autoDream 都有自己的 gate。它们不是简单继承总开关，而是再叠加 GrowthBook 和运行模式限制。</li>
+            <li><strong>初始化入口：</strong><code>loadMemoryPrompt()</code>、<code>initSessionMemory()</code>、<code>initExtractMemories()</code>、<code>initAutoDream()</code>、<code>loadAgentMemoryPrompt()</code> 分别把 memory 接入 system prompt、post-sampling hook、turn-end hook、background housekeeping 和 agent loader。</li>
           </ul>
-          <h3>3.2 memdir 检索为什么不是 embedding</h3>
-          <p><code>findRelevantMemories()</code> 的路径是：<code>scanMemoryFiles()</code> 扫描 memory header，<code>formatMemoryManifest()</code> 组织候选，再用 <code>sideQuery()</code> 让小模型选最多 5 个文件名。这说明当前仓库并未展示向量库或 embedding index。</p>
-          <ul class="fact-list">
-            <li><strong>异步预取：</strong><code>startRelevantMemoryPrefetch()</code> 只拿最后一个真实用户消息作为 query，且完全不阻塞当前 turn。</li>
-            <li><strong>去重预算：</strong>已经 surfacing 过的 memory 会被过滤，避免每轮都重复附加同一份记忆。</li>
-          </ul>
-          <h3>3.3 session memory 的真实更新链</h3>
+          <h3>3.2 路径、目录和安全边界</h3>
           <ul class="check-list">
-            <li><strong>触发阈值：</strong><code>sessionMemoryUtils.ts</code> 默认要求初始化阈值 10000 tokens，更新阈值 5000 tokens，或 3 次工具调用，并且只在 <code>querySource === 'repl_main_thread'</code> 时运行。</li>
-            <li><strong>文件准备：</strong><code>setupSessionMemoryFile()</code> 会创建 memory 文件、载入模板，并在读取前从 <code>readFileState</code> 中删除该路径，防止 dedup 返回 <code>file_unchanged</code> stub。</li>
-            <li><strong>更新方式：</strong>系统不会直接拼字符串，而是用 <code>runForkedAgent()</code> 启动受限 subagent，通过 <code>createMemoryFileCanUseTool(memoryPath)</code> 只允许它用 <code>FileEditTool</code> 编辑这一条确切路径。</li>
+            <li><strong>auto memory 目录：</strong><code>getAutoMemPath()</code> 支持 env override、可信 settings override，以及默认的 <code>~/.claude/projects/&lt;sanitized-git-root&gt;/memory/</code>。</li>
+            <li><strong>路径安全：</strong><code>validateMemoryPath()</code> 会拒绝相对路径、根路径、UNC 路径、空字节路径，并故意排除 projectSettings 对 <code>autoMemoryDirectory</code> 的控制，防止恶意仓库把 memory 指到敏感目录。</li>
+            <li><strong>权限 carve-out：</strong><code>filesystem.ts</code> 会对 <code>isAutoMemPath()</code>、<code>isAgentMemoryPath()</code> 提供专门的读写放行，但当使用 <code>CLAUDE_COWORK_MEMORY_PATH_OVERRIDE</code> 时，auto memory 的静默写入 carve-out 会失效，重新走常规 permission flow。</li>
           </ul>
-          <h3>3.4 transcript 与 continuity</h3>
-          <p>ClaudeCode 的 continuity 核心不在单一 <code>messages[]</code>。真正的恢复基础是 transcript、compact boundary、forked-agent cache prefix 和 session restore 逻辑的组合。<code>CacheSafeParams</code> 负责稳定 <code>systemPrompt/userContext/systemContext/forkContextMessages</code>，让子代理复用 prompt cache 的同时，又能通过 <code>createSubagentContext()</code> 隔离父子线程的可变状态。</p>
+          <h3>3.3 存储模型与表示方式</h3>
+          <ul class="fact-list">
+            <li><strong>显式 source taxonomy：</strong><code>src/utils/memory/types.ts</code> 定义了 <code>Managed / User / Project / Local / AutoMem</code>，在 <code>TEAMMEM</code> 打开时再加上 <code>TeamMem</code>。这是代码里最明确的 memory source 类型系统。</li>
+            <li><strong>auto memory：</strong>Markdown 文件加 frontmatter，type 被约束为 <code>user / feedback / project / reference</code>。这里的 type 是 durable memory 条目分类，不是 <code>Managed / User / Project / Local / AutoMem / TeamMem</code> 那套 source taxonomy。<code>MEMORY.md</code> 只是索引，不是正文。</li>
+            <li><strong>session memory：</strong>固定结构的单个 markdown 文件，默认模板在 <code>src/services/SessionMemory/prompts.ts</code>，并支持用户自定义模板与 prompt。</li>
+            <li><strong>transcript：</strong><code>sessionStorage.ts</code> 使用 JSONL 记录会话消息、compact boundary、content replacement、collapse snapshot 等恢复元数据。</li>
+            <li><strong>agent memory：</strong><code>getAgentMemoryDir()</code> 支持 <code>user / project / local</code> 三种 scope，并可通过 snapshot 机制同步到本地副本。</li>
+            <li><strong>execution cache：</strong><code>readFileState</code>、<code>contentReplacementState</code>、<code>loadedNestedMemoryPaths</code> 用于去重、预算和 freshness，不是语义记忆。</li>
+          </ul>
+          <h3>3.4 memory 是怎么被读出来的</h3>
+          <ul class="fact-list">
+            <li><strong>稳定前缀读取：</strong><code>getUserContext()</code> 会通过 <code>getMemoryFiles()</code> / <code>getClaudeMds()</code> 组装 memory。真实装载顺序是 <code>Managed -&gt; User -&gt; Project -&gt; Local -&gt; AutoMem -&gt; TeamMem</code>；其中 project/local 会按目录向上遍历，越靠近当前目录优先级越高。</li>
+            <li><strong>query-time 检索：</strong><code>startRelevantMemoryPrefetch()</code> 会异步启动 <code>findRelevantMemories()</code>，后者先 <code>scanMemoryFiles()</code> 再 <code>sideQuery()</code> 选择候选，最后以 <code>relevant_memories</code> attachment 形式注入当前 turn。</li>
+            <li><strong>nested memory：</strong><code>memoryFilesToAttachments()</code> 会把特定文件相关的 memory / rules 变成 <code>nested_memory</code> 附件，并用 <code>loadedNestedMemoryPaths + readFileState</code> 双重去重。</li>
+            <li><strong>session memory 消费：</strong><code>getSessionMemoryContent()</code> 会被 <code>sessionMemoryCompact.ts</code>、<code>awaySummary.ts</code>、<code>skillify.ts</code> 读取，用于压缩、recap 和技能生成。</li>
+          </ul>
+          <h3>3.5 memory 是怎么被写回去的</h3>
+          <ul class="check-list">
+            <li><strong>主代理直接写：</strong>system prompt 已告诉主模型如何写 memory file 和更新 <code>MEMORY.md</code>。若主代理本 turn 已写过 memory，<code>extractMemories.ts</code> 会通过 <code>hasMemoryWritesSince()</code> 检测到并跳过背景提取。</li>
+            <li><strong>extract-memories：</strong><code>runExtraction()</code> 会在 turn 结束后扫描新增消息区间，把现有 memory manifest 预注入提示词，再用 <code>runForkedAgent()</code> 在 <code>querySource='extract_memories'</code> 下更新 durable memory。</li>
+            <li><strong>session memory：</strong><code>extractSessionMemory</code> 在主 REPL 的 post-sampling hook 中触发，先创建或读取 session memory 文件，再用受限 subagent 编辑这一条确切路径。</li>
+            <li><strong>agent memory：</strong>agent 定义里如果声明了 <code>memory</code> scope，<code>loadAgentsDir.ts</code> 会自动注入 <code>Read/Edit/Write</code> 工具，并在 system prompt 中追加专属 memory 使用说明。</li>
+          </ul>
+          <h3>3.6 调度、生命周期与一致性</h3>
+          <ul class="fact-list">
+            <li><strong>session memory 调度：</strong>使用 post-sampling hook + 阈值判断 + <code>sequential()</code>，只在 <code>repl_main_thread</code> 运行，并通过 <code>waitForSessionMemoryExtraction()</code> 给 compaction 路径提供超时等待。</li>
+            <li><strong>extract-memories 调度：</strong>使用闭包状态维护 <code>lastMemoryMessageUuid</code>、<code>inProgress</code>、<code>pendingContext</code>，支持 coalescing 和 trailing run，避免多个 extraction 相互重叠。</li>
+            <li><strong>Dream 调度：</strong>不依赖当前 turn，而是依赖上次 consolidation 时间、最近 session 数、scan throttle 和 lock。</li>
+            <li><strong>一致性锚点：</strong><code>lastMemoryMessageUuid</code>、<code>lastSummarizedMessageId</code>、<code>readFileState</code>、<code>hasMemoryWritesSince()</code> 共同保证“不会重复摘要、不会重复 surfacing、不会主代理和后台代理双写同一批信息”。</li>
+          </ul>
+          <h3>3.7 端到端 memory 流</h3>
+          <p>memory 对后续交互的影响有三条回流路径：<code>MEMORY.md</code> 进入稳定前缀，relevant memories 进入当前 turn attachments，session memory 进入 compaction / away summary / skillify。与此同时，extract-memories 与 Dream 又在后台更新 durable memory，反过来影响未来 turn 与未来 session。</p>
           <div class="diagram-box">
             <div class="diagram-stage" data-diagram>
-              <script type="text/plain" class="mermaid-source">flowchart LR
-  TURN["current turn"] --> QUERY["query()"]
-  QUERY --> PREFETCH["relevant memory prefetch"]
-  PREFETCH --> MEMDIR["memdir"]
-  QUERY --> TRANSCRIPT["session transcript / JSONL"]
-  QUERY --> CACHE["readFileState / contentReplacementState"]
-  QUERY --> SCHED["session memory scheduler"]
-  SCHED --> SUB["runForkedAgent(session_memory)"]
-  SUB --> SM["session memory markdown"]
-  TRANSCRIPT --> DREAM["Dream / extract memories"]
-  DREAM --> MEMDIR</script>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  USER["user turn"] --> Q["query()"]
+  Q --> UC["getUserContext -> MEMORY.md index"]
+  Q --> PREF["startRelevantMemoryPrefetch"]
+  PREF --> SEL["scanMemoryFiles + sideQuery select"]
+  SEL --> ATT["relevant_memories attachment"]
+  Q --> TOOL["main agent may Read/Edit/Write memory files"]
+  TOOL --> CHECK["hasMemoryWritesSince"]
+  Q --> STOP["turn finished / stop hooks"]
+  STOP --> EX["extractMemories runForkedAgent"]
+  EX --> MEM["auto memory dir / MEMORY.md"]
+  Q --> POST["post-sampling hook"]
+  POST --> SM["sessionMemory runForkedAgent"]
+  SM --> SMFILE["session memory markdown"]
+  SMFILE --> COMPACT["sessionMemoryCompact / awaySummary / skillify"]
+  MEM --> DREAM["autoDream consolidation"]
+  DREAM --> MEM
+  Q --> TRANS["sessionStorage JSONL transcript"]
+  TRANS --> EX
+  TRANS --> DREAM</script>
             </div>
           </div>
           <div class="diagram-meta">
-            <p class="diagram-note"><strong>文件映射：</strong><code>src/memdir/findRelevantMemories.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/services/SessionMemory/sessionMemory.ts</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/utils/forkedAgent.ts</code>。</p>
-            <p class="diagram-note"><strong>关键观察：</strong>memory 是分层协作系统。durable memory、session memory、transcript 和 execution cache 各自解决不同的问题，而不是互相替代。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/memdir/paths.ts</code>、<code>src/utils/claudemd.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/services/SessionMemory/sessionMemory.ts</code>、<code>src/services/extractMemories/extractMemories.ts</code>、<code>src/services/autoDream/*</code>、<code>src/utils/sessionStorage.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>ClaudeCode 的 memory 是运行时基础设施，而不是单点“记忆库”。durable memory、session memory、transcript 和 agent memory 在不同阶段被不同路径消费和更新。</p>
           </div>
-          <div class="callout"><strong>重要设计原则：</strong><code>src/memdir/memoryTypes.ts</code> 明确禁止把代码结构、架构、git 状态等可重新推导信息直接写入 memory。目标是让长期记忆保存“难以重新发现但值得长期保存的事实”，而不是复制当前仓库状态。</div>
+          <div class="callout"><strong>重要设计原则：</strong><code>src/memdir/memoryTypes.ts</code> 明确禁止把代码结构、架构、git 状态、当前 task context 等可重新推导信息直接写入 memory。系统想保存的是“难以重新发现但值得长期保存的事实”，而不是复制当前仓库状态。</div>
+          <h3>3.8 现实校正：实现里的 memory 不是严格三层</h3>
+          <p>如果严格按代码而不是按概念模型来数，ClaudeCode 没有一个官方的“三层 memory stack”。更接近现实的是两套正交分类：一套是 <code>Managed / User / Project / Local / AutoMem / TeamMem</code> 这类 file-based source taxonomy，另一套是 <code>SessionMemory</code>、<code>AgentMemory</code>、transcript、运行时缓存这些 continuity mechanism。</p>
+          <h4>3.8.1 如果只看会被装入上下文的 memory source，有几种</h4>
+          <ul class="fact-list">
+            <li><strong>固定 5 种：</strong><code>Managed / User / Project / Local / AutoMem</code>，定义在 <code>src/utils/memory/types.ts</code> 与 <code>src/utils/claudemd.ts</code>。</li>
+            <li><strong>可选第 6 种：</strong><code>TeamMem</code>，只有 <code>feature('TEAMMEM')</code> 打开时存在。</li>
+            <li><strong>层级加载顺序：</strong><code>Managed -&gt; User -&gt; Project -&gt; Local -&gt; AutoMem -&gt; TeamMem</code>；其中 project/local 会按目录向上遍历，越靠近当前目录优先级越高。</li>
+            <li><strong>配置影响：</strong><code>projectSettings/localSettings/userSettings</code>、<code>claudeMdExcludes</code>、<code>@include</code>、additional directories、nested worktree 去重都会改变最终注入集合。</li>
+          </ul>
+          <h4>3.8.2 如果看整个 continuity architecture，至少还有哪些机制</h4>
+          <ul class="check-list">
+            <li><strong>SessionMemory：</strong><code>summary.md</code> 形式的会话摘要，主要服务于 compact、away summary、skillify。</li>
+            <li><strong>AgentMemory：</strong><code>user / project / local</code> 三种 scope 的 agent 持久记忆，和前面的 file source taxonomy 正交。</li>
+            <li><strong>Transcript：</strong><code>sessionStorage.ts</code> / <code>sessionRestore.ts</code> 的 JSONL 持久化与恢复基座。</li>
+            <li><strong>运行时状态：</strong><code>messagesForQuery</code>、<code>toolResults</code>、<code>readFileState</code>、<code>loadedNestedMemoryPaths</code> 等执行期结构。</li>
+          </ul>
+          <h4>3.8.3 三层模型和实现现实的差距</h4>
+          <ul class="fact-list">
+            <li><strong>三层模型的价值：</strong>它帮助理解时间尺度，把当前回合、当前 session、跨 session durable knowledge 分开看。</li>
+            <li><strong>实现现实的差距：</strong><code>Managed/User/Project/Local</code> 这套 CLAUDE.md/rules 层级不自然落在“三层”里；它更像上下文指令装载系统。</li>
+            <li><strong>另一个差距：</strong><code>AgentMemory(user/project/local)</code> 本身又是一套 scope taxonomy，不等于 project/session/working 三分法。</li>
+            <li><strong>结论：</strong>三层模型应被视为阅读辅助抽象，而不是源码里的官方架构。</li>
+          </ul>
+          <h3>3.9 Claude Code 的 Memory：分析视角与实现现实</h3>
+          <p>更贴近实现的表达不是“源码内置的官方三层 memory 架构”，而是两套系统：一套是文件型、层级化、可持久化的 memory source system；另一套是运行时 continuity system。把它们统称为 <code>Memory OS</code> 是分析视角，用来强调这不是单点存储，而是上下文装配与连续性维护机制的组合。</p>
+          <h4>3.9.1 文件型 memory source 体系图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  MAN["Managed<br/>/etc/.../CLAUDE.md<br/>managed .claude/rules/*.md"] --> LOAD["getMemoryFiles()"]
+  USER["User<br/>~/.claude/CLAUDE.md<br/>~/.claude/rules/*.md"] --> LOAD
+  PROJ["Project<br/>cwd upwards:<br/>CLAUDE.md<br/>.claude/CLAUDE.md<br/>.claude/rules/*.md"] --> LOAD
+  LOCAL["Local<br/>cwd upwards:<br/>CLAUDE.local.md"] --> LOAD
+  AUTO["AutoMem<br/>getAutoMemEntrypoint()<br/>MEMORY.md only"] --> LOAD
+  TEAM["TeamMem<br/>team entrypoint<br/>feature-gated"] --> LOAD
+  LOAD --> FILTER["@include / excludes<br/>settings gates<br/>worktree dedupe"]
+  FILTER --> SERIAL["getClaudeMds()"]
+  SERIAL --> UCTX["getUserContext().claudeMd"]
+  UCTX --> QUERY["prependUserContext(...)"]</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图只描述持久化、文件驱动的 memory source hierarchy，以及它们如何经过层级装载和过滤进入 userContext。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/utils/memory/types.ts</code>、<code>src/utils/claudemd.ts</code>、<code>src/context.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>代码里最明确、最“官方”的 taxonomy 其实是这套 <code>Managed / User / Project / Local / AutoMem / TeamMem</code> source type，而不是三层 runtime 模型。</p>
+          </div>
+          <h4>3.9.2 运行时 continuity 体系图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  subgraph RUNTIME["Runtime continuity system"]
+    TS["Transcript JSONL<br/>sessionStorage / sessionRestore"]
+    SM["SessionMemory<br/>summary.md<br/>post-sampling hook"]
+    AM["AgentMemory<br/>user / project / local scope"]
+    RC["Runtime caches<br/>readFileState<br/>loadedNestedMemoryPaths<br/>assistantMessages / toolResults"]
+  end
+  Q["query()"] --> RC
+  Q --> TS
+  HOOK["post-sampling / stop hooks"] --> SM
+  AG["Agent loader / runForkedAgent"] --> AM
+  TS --> EX["extractMemories / autoDream"]
+  RC --> Q
+  SM --> COMPACT["compact / awaySummary / skillify"]
+  AM --> AG</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图只描述 continuity 机制：session summary、transcript、agent memory 和执行态 cache 如何在运行时维持连续性。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/services/SessionMemory/*</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/utils/sessionRestore.ts</code>、<code>src/tools/AgentTool/agentMemory.ts</code>、<code>src/query.ts</code>、<code>src/utils/attachments.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>这些 continuity mechanism 与前面的 file-based source taxonomy 正交存在；源码并没有把它们统一收敛成官方层次模型。</p>
+          </div>
+          <h4>3.9.3 两套系统如何共同构造上下文</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  FS["File-based memory sources<br/>Managed / User / Project / Local / AutoMem / TeamMem"] --> UC["getUserContext / getClaudeMds"]
+  FS --> PREF["findRelevantMemories / nested memory"]
+  UC --> Q["query() context assembly"]
+  PREF --> Q
+  RT["Runtime continuity<br/>transcript / session memory /<br/>agent memory / runtime caches"] --> Q
+  Q --> API["callModel"]
+  API --> TOOL["tool loop"]
+  TOOL --> Q
+  Q --> WRITE["session memory / transcript /<br/>extractMemories / autoDream / agent memory"]
+  WRITE --> FS
+  WRITE --> RT</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图展示文件型系统和运行时系统如何在 <code>query()</code> 附近合流，共同构造当前模型请求的上下文，并在任务结束后分别被更新。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/context.ts</code>、<code>src/utils/claudemd.ts</code>、<code>src/memdir/findRelevantMemories.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/query.ts</code>、<code>src/services/SessionMemory/*</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/tools/AgentTool/agentMemory.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>当前上下文是动态拼装出来的，不是来自单一 memory store；这正是“分析视角”和“实现现实”之间的关键差异。</p>
+          </div>
+          <h4>3.9.4 读写时序：memory 如何参与一次典型任务</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant U as User
+  participant H as handlePromptSubmit/processUserInput
+  participant G as getMemoryFiles/getUserContext
+  participant Q as query()
+  participant M as Model API
+  participant T as Tool runtime
+  participant S as SessionMemory
+  participant TR as Transcript
+  participant D as extractMemories/autoDream
+
+  U->>H: 输入 / 命令 / 附件
+  H->>G: 需要稳定前缀
+  G-->>Q: CLAUDE.md/rules/AutoMem/TeamMem
+  Q->>Q: 组装消息与运行时缓存
+  Q->>M: 调用模型
+  M-->>Q: assistant / tool_use
+  Q->>T: 执行工具
+  T-->>Q: tool_result / attachment
+  Q->>TR: 持久化 transcript
+  alt 达到摘要阈值
+    Q->>S: extractSessionMemory()
+  end
+  alt 需要 durable 提取
+    TR->>D: 读取新增事实
+    D-->>G: 更新 AutoMem / durable files
+  end</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图按一次典型任务的时间顺序描述 memory 何时被读、何时被写、何时只作为运行时状态存在。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/context.ts</code>、<code>src/utils/claudemd.ts</code>、<code>src/query.ts</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/services/SessionMemory/sessionMemory.ts</code>、<code>src/services/extractMemories/extractMemories.ts</code>、<code>src/services/autoDream/autoDream.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>任务开始时主导上下文的是 file-based sources；任务结束后才由 transcript、session summary 和 durable extraction 把事实沉淀回系统。</p>
+          </div>
+          <h4>3.9.5 为什么仍可把它视为 Memory OS</h4>
+          <ul class="fact-list">
+            <li><strong>从职责组合看：</strong>它同时负责层级文件装载、上下文装配、连续性维护、后台整理和访问治理，已经超出普通“记忆存储”的范围。</li>
+            <li><strong>从实现现实看：</strong>更贴近代码的模型是“文件型 source system + 运行时 continuity system”，而不是单一三层 stack。</li>
+            <li><strong>从代码证据看：</strong><code>getMemoryFiles()</code>、<code>SessionMemory</code>、transcript、<code>extractMemories</code>、<code>autoDream</code>、permission carve-out 共同组成了这套 memory runtime。</li>
+            <li><strong>局限：</strong>这是分析视角，不是源码里的官方命名；同时 taxonomy 和 mechanism 都比较多，认知负担不低。</li>
+          </ul>
+          <h3>3.10 Claude Code Context Engine 架构与 Memory 在其中的位置</h3>
+          <p><code>Context Engine</code> 同样不是源码中的官方命名，而是对完整上下文构造流水线的架构概括。它把输入预处理、文件型 memory source、运行时 continuity、附件收集、query 打包、工具循环和 turn 后写回放到同一条主线上，从而解释 ClaudeCode 为什么更像一个“上下文构造系统”，而不仅仅是“带记忆的聊天工具”。</p>
+          <h4>3.10.1 Context Engine 总体架构图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  subgraph INPUT["输入与触发"]
+    USER["用户输入 / queued command / pasted content"]
+    SUBMIT["handlePromptSubmit / processUserInput"]
+  end
+
+  subgraph SOURCES["上下文来源"]
+    SYS["System context<br/>getSystemPrompt / getSystemContext"]
+    FILEMEM["File-based memory<br/>Managed / User / Project / Local / AutoMem / TeamMem"]
+    RUNTIME["Runtime continuity<br/>SessionMemory / transcript / agent memory / runtime cache"]
+    LIVE["Live attachments<br/>files / IDE selection / diagnostics / tasks / skills"]
+  end
+
+  subgraph ENGINE["Context Engine"]
+    ATT["getAttachmentMessages / memory prefetch / nested memory"]
+    PREFIX["fetchSystemPromptParts<br/>getUserContext / getSystemContext"]
+    PACK["query() context assembly<br/>messagesForQuery<br/>tool-result budget<br/>snip / microcompact / collapse / autocompact"]
+    WINDOW["Final context window<br/>system prompt + user context + messages + attachments"]
+  end
+
+  subgraph LOOP["模型与工具循环"]
+    MODEL["callModel"]
+    TOOLS["StreamingToolExecutor<br/>toolOrchestration / toolExecution"]
+    UPDATE["tool_result / contextModifier<br/>messages update"]
+  end
+
+  subgraph WRITEBACK["写回与后台维护"]
+    TR["sessionStorage transcript"]
+    SM["SessionMemory"]
+    DUR["extractMemories / autoDream / AgentMemory writes"]
+  end
+
+  USER --> SUBMIT
+  SUBMIT --> ATT
+  SUBMIT --> PREFIX
+  SYS --> PREFIX
+  FILEMEM --> PREFIX
+  FILEMEM --> ATT
+  RUNTIME --> PREFIX
+  RUNTIME --> ATT
+  LIVE --> ATT
+  ATT --> PACK
+  PREFIX --> PACK
+  PACK --> WINDOW
+  WINDOW --> MODEL
+  MODEL --> TOOLS
+  TOOLS --> UPDATE
+  UPDATE --> PACK
+  UPDATE --> TR
+  TR --> SM
+  TR --> DUR
+  DUR --> FILEMEM
+  SM --> RUNTIME</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图把完整的上下文构造系统放到一张架构图里，明确 memory 只是 Context Engine 的一部分，而不是独立于主循环的孤立模块。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/utils/handlePromptSubmit.ts</code>、<code>src/utils/processUserInput/processUserInput.ts</code>、<code>src/context.ts</code>、<code>src/utils/claudemd.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/query.ts</code>、<code>src/services/tools/*</code>、<code>src/services/SessionMemory/*</code>、<code>src/utils/sessionStorage.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>真正把所有输入源汇总成“最终 context window”的地方是 <code>query()</code>；memory 既是上游输入，也是 turn 后写回目标。</p>
+          </div>
+          <h4>3.10.2 Context Construction Pipeline 与交互循环图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant U as User
+  participant I as Input pipeline
+  participant C as Context builders
+  participant M as Memory systems
+  participant Q as query()
+  participant L as Model
+  participant T as Tool loop
+  participant W as Writeback
+
+  U->>I: 输入 / 命令 / 引用 / 附件
+  I->>C: 结构化 turn
+  C->>M: 读取 CLAUDE.md / rules / AutoMem / TeamMem
+  C->>M: 读取 session / transcript / agent continuity
+  C->>C: 收集文件、诊断、IDE、task、skill 等 attachments
+  C-->>Q: systemPrompt + userContext + attachments + initial messages
+  Q->>Q: budget / snip / microcompact / collapse / autocompact
+  Q->>L: 发送最终 context window
+  L-->>Q: assistant / tool_use
+  Q->>T: 调度工具执行
+  T-->>Q: tool_result / attachment / contextModifier
+  Q->>Q: 更新 messagesForQuery / toolResults
+  Q->>W: transcript / session memory / durable extraction
+  W->>M: 更新 runtime continuity 与 file-based memory
+  M-->>C: 影响后续 turns / sessions</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图展示 Context Engine 不是一次性 assemble，而是一个持续循环：装配上下文、调用模型、执行工具、更新上下文、写回 continuity，再影响下一轮交互。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>src/context.ts</code>、<code>src/utils/queryContext.ts</code>、<code>src/utils/attachments.ts</code>、<code>src/query.ts</code>、<code>src/services/tools/*</code>、<code>src/services/SessionMemory/*</code>、<code>src/services/extractMemories/extractMemories.ts</code>、<code>src/services/autoDream/autoDream.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>context window 的真实内容不是启动时一次选定的，而是在工具执行和压缩过程中被持续重写；memory 在读和写两个方向都参与了这条主回路。</p>
+          </div>
+          <h4>3.10.3 Memory 为什么必须放回 Context Engine 里理解</h4>
+          <ul class="fact-list">
+            <li><strong>从系统能力看：</strong>ClaudeCode 的关键能力不是“有记忆”，而是“能持续构造可用上下文”。memory、文件读取、诊断、任务、工具结果都只是 Context Engine 的不同输入源。</li>
+            <li><strong>从 context window 组成看：</strong>最终窗口至少包含 system prompt、user context、messagesForQuery、attachments、toolResults，以及 compact/collapse 后保留下来的内容。</li>
+            <li><strong>从代码现实看：</strong>memory 会在 session 启动和 turn 执行中被装载，但最终能不能进入模型，仍然要经过 <code>query.ts</code> 的预算治理与裁剪。</li>
+            <li><strong>限制：</strong>context window 仍是硬约束，所有 memory 和附件都必须在打包和压缩后竞争同一预算。</li>
+          </ul>
+          <h3>3.11 Claude Code / Cursor / Copilot 的 Context Engine 架构对比</h3>
+          <p>这一节不是做产品功能罗列，而是把三类 coding assistant 放到统一的 <code>Context Engine</code> 视角下比较：谁负责收集上下文、谁负责记忆注入、谁主导工具循环、谁承担 orchestration。这里的证据边界需要特别说明：Claude Code 结论来自当前仓库源码；Cursor 与 GitHub Copilot 主要依据官方公开行为，再辅以架构推断，因此会显式区分“已确认公开行为”和“合理推断”。</p>
+
+          <h4>3.11.1 对比架构图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  subgraph CC["Claude Code<br/>代码证据驱动"]
+    CCI["输入预处理<br/>handlePromptSubmit / processUserInput"]
+    CCM["Memory 输入<br/>Managed / User / Project / Local / AutoMem / TeamMem<br/>+ transcript / session memory / agent memory"]
+    CCT["工具回路<br/>StreamingToolExecutor / toolExecution"]
+    CCC["Context Engine 核心<br/>query() 负责 assemble / compact / rewrite"]
+    CCB["后台维护<br/>extractMemories / autoDream / session summary"]
+    CCW["最终 context window"]
+    CCN["特点<br/>runtime-first<br/>tool loop 与 context update 强耦合"]
+    CCI --> CCC
+    CCM --> CCC
+    CCT --> CCC
+    CCC --> CCW
+    CCC --> CCT
+    CCC --> CCB
+    CCN --- CCC
+  end
+
+  subgraph CU["Cursor<br/>公开行为 + 合理推断"]
+    CUI["IDE 输入面<br/>chat / edit / agent"]
+    CUR["规则与记忆<br/>Rules / Memories"]
+    CUX["代码库检索层<br/>codebase indexing / semantic retrieval"]
+    CUT["IDE 工具面<br/>read / search / edit / terminal"]
+    CUC["Context Engine（推断）<br/>在 IDE 中做检索增强与多步组装"]
+    CUW["最终模型上下文"]
+    CUN["特点<br/>index-augmented<br/>IDE 宿主强整合"]
+    CUI --> CUC
+    CUR --> CUC
+    CUX --> CUC
+    CUT --> CUC
+    CUC --> CUW
+    CUC --> CUT
+    CUN --- CUC
+  end
+
+  subgraph CP["GitHub Copilot<br/>公开行为 + 合理推断"]
+    CPI["编辑器 / GitHub 入口"]
+    CPR["指令与仓库约束<br/>copilot-instructions / AGENTS / repo settings"]
+    CPG["GitHub substrate<br/>repository graph / PR / issue / MCP / coding agent"]
+    CPT["工具与执行面<br/>IDE actions / GitHub actions / agent tasks"]
+    CPC["Context Engine（推断）<br/>云端或 repo-side orchestration 更重"]
+    CPW["最终模型上下文"]
+    CPN["特点<br/>GitHub substrate 强<br/>agent 运行更偏平台化"]
+    CPI --> CPC
+    CPR --> CPC
+    CPG --> CPC
+    CPT --> CPC
+    CPC --> CPW
+    CPC --> CPT
+    CPN --- CPC
+  end</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图把三者都当成“上下文构造系统”来看，而不是按产品功能比较。核心问题是谁来负责 assemble context、memory 放在哪里、工具回路与上下文更新耦合多深。</p>
+            <p class="diagram-note"><strong>文件映射 / 公开资料映射：</strong>Claude Code 对应 <code>src/utils/handlePromptSubmit.ts</code>、<code>src/utils/processUserInput/processUserInput.ts</code>、<code>src/query.ts</code>、<code>src/services/tools/*</code>、<code>src/services/SessionMemory/*</code>、<code>src/services/extractMemories/*</code>、<code>src/services/autoDream/*</code>。Cursor 侧主要依据其官方文档中的 <code>Rules</code>、<code>Memories</code>、codebase indexing/agent 描述；Copilot 侧主要依据 GitHub 官方文档中的 repository custom instructions、<code>AGENTS.md</code>、custom agents、MCP、coding agent 描述。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>Claude Code 的 Context Engine 最显式，<code>query()</code> 是清晰可见的上下文装配核心；Cursor 更像 IDE 内嵌的检索增强上下文层；Copilot 则更像把 GitHub 资源面、平台 orchestration 和编辑器入口拼接成更平台化的 context engine。</p>
+          </div>
+
+          <h4>3.11.2 对比 context flow 图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  START["编码任务开始"]
+
+  subgraph CCF["Claude Code"]
+    CC1["读取输入 / 附件 / 当前 turn"]
+    CC2["装载 file-based memory<br/>+ runtime continuity"]
+    CC3["query() 组装 context window"]
+    CC4["模型输出 tool_use / assistant"]
+    CC5["执行工具并回写 messagesForQuery"]
+    CC6["transcript / session summary / durable extraction"]
+    CC1 --> CC2 --> CC3 --> CC4 --> CC5 --> CC3
+    CC5 --> CC6
+  end
+
+  subgraph CUF["Cursor"]
+    CU1["IDE 当前文件 / selection / task"]
+    CU2["读取 Rules / Memories"]
+    CU3["代码库索引检索与相关片段扩展"]
+    CU4["组装上下文并请求模型"]
+    CU5["必要时调 IDE 工具 / agent actions"]
+    CU6["更新 chat / memory / workspace state"]
+    CU1 --> CU2 --> CU3 --> CU4 --> CU5 --> CU4
+    CU5 --> CU6
+  end
+
+  subgraph CPF["Copilot"]
+    CP1["编辑器或 GitHub 任务入口"]
+    CP2["读取 repo instructions / AGENTS / task metadata"]
+    CP3["结合 GitHub 资源面与检索"]
+    CP4["构造模型请求"]
+    CP5["agent / IDE / MCP 执行动作"]
+    CP6["更新会话 / issue / PR / task state"]
+    CP1 --> CP2 --> CP3 --> CP4 --> CP5 --> CP4
+    CP5 --> CP6
+  end
+
+  START --> CC1
+  START --> CU1
+  START --> CP1</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图对比一次典型编码任务里三者如何逐步构造和更新上下文。重点不在“会不会调用工具”，而在工具结果、memory、检索结果是否被显式折返进下一轮 context。</p>
+            <p class="diagram-note"><strong>文件映射 / 公开资料映射：</strong>Claude Code 的读写回路可直接映射到 <code>src/query.ts</code>、<code>src/services/tools/toolExecution.ts</code>、<code>src/utils/sessionStorage.ts</code>、<code>src/services/extractMemories/extractMemories.ts</code>。Cursor 与 Copilot 的 flow 来自官方公开的 agent / memory / repository instructions / MCP 能力，再结合工程上常见的检索增强回路做保守推断。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>Claude Code 的上下文更新回路最“显式可追踪”；Cursor 的关键差异在于 index/retrieval 先行；Copilot 的关键差异在于上下文构造更可能依赖 GitHub 平台侧资源和远端 orchestration。</p>
+          </div>
+
+          <h4>3.11.3 逐维度比较</h4>
+          <ul class="fact-list">
+            <li><strong>Context construction：</strong>Claude Code 的已确认实现是把 system prompt、user context、memory、attachments、tool results 和 compact 策略集中到 <code>query()</code>。Cursor 的已确认公开行为表明其强依赖代码库索引与 IDE 当前上下文；Copilot 的已确认公开行为表明其会消费 repo instructions、agent task metadata 和 GitHub 资源面。合理推断是：后两者的上下文构造更依赖宿主平台提供的隐式上下文，而不像 Claude Code 这样在单个 runtime 核心里显式拼装。</li>
+            <li><strong>Memory integration：</strong>Claude Code 的 memory 明显分成“文件型 source taxonomy”和“runtime continuity mechanisms”两套正交系统，并通过 <code>context.ts</code>、<code>claudemd.ts</code>、transcript、<code>SessionMemory</code> 汇入主循环。Cursor 的 Rules/Memories 更接近 IDE 宿主提供的持久规则与偏好层；Copilot 更偏向 repository instructions 与 task/container state。对比下来，Claude Code 的 memory 更像 context engine 的可见组件，另外两者更像嵌入平台的 context substrate。</li>
+            <li><strong>Tool interaction：</strong>Claude Code 是已确认的 tool-first agent loop，模型产生 <code>tool_use</code> 后进入 <code>StreamingToolExecutor</code> 与 <code>toolExecution</code>，工具结果再折返进消息流。Cursor 与 Copilot 的公开行为都显示它们支持 read/search/edit/terminal 或 agent actions，但内部是否采用与 Claude Code 一样显式的 tool protocol 和消息折返结构，公开证据不足，只能保守推断为“存在类似回路，但封装层更深”。</li>
+            <li><strong>Runtime orchestration：</strong>Claude Code 的 orchestration 可以直接在源码里看到：前处理、context assembly、tool loop、writeback、background memory maintenance 是一条连续 runtime。Cursor 的 agent orchestration 很可能深度嵌入 IDE；Copilot 的 coding agent 与 GitHub 任务执行表明其 orchestration 更偏平台侧、多入口与远端协调。换句话说，Claude Code 强在“运行时可解释性”，Cursor/Copilot 更可能强在“宿主整合深度”。</li>
+            <li><strong>Repository understanding：</strong>Claude Code 主要依赖搜索、文件读取、repository detection、memory files 和工具循环逐轮构造理解，而不是预设统一代码图谱。Cursor 的公开行为显示其更强调 codebase indexing 和相关代码召回；Copilot 则更可能结合 repo metadata、GitHub graph、当前编辑器上下文与任务对象。对于大仓库，Claude Code 更灵活但更依赖多轮探索；Cursor/Copilot 理论上能更快召回广域结构，但代价是可解释性降低、隐藏策略更多。</li>
+            <li><strong>工程 trade-off：</strong>Claude Code 的优势是上下文主循环清晰、memory 与工具编排能被工程师直接理解和修改；限制是显式工具回路和上下文预算治理会带来更多运行时分支。Cursor 的优势大概率是索引增强和 IDE 原位体验；限制是核心 context engine 对外透明度较低。Copilot 的优势大概率是 GitHub 平台资源整合和远程 agent 能力；限制是平台依赖更强、本地 runtime 边界更不透明。</li>
+          </ul>
+
+          <h4>3.11.4 架构判断</h4>
+          <div class="callout"><strong>判断：</strong>从 Context Engine 架构看，Claude Code 更接近“显式 runtime context machine”；Cursor 更接近“IDE 内嵌的检索增强 context layer”；GitHub Copilot 更接近“平台化 context substrate + agent orchestration”。这不是优劣排序，而是三种工程路径：本地 runtime 显式化、IDE 宿主检索化、平台资源编排化。</div>
+
+          <h3>3.12 Claude Code Context Engine 五层模型：从实现现实到分析框架</h3>
+          <p>这一节把前面的分析重新组织成一个更系统的五层模型。但要先说清楚：这<strong>不是</strong>源码里显式命名的官方分层，而是基于当前实现现实提炼出来的分析框架。它的价值在于帮助我们把“输入塑形、持久知识、运行时连续性、检索工具、最终窗口装配”放到同一张地图里理解。</p>
+
+          <h4>3.12.1 五层模型是什么</h4>
+          <ul class="fact-list">
+            <li><strong>Layer 1. Input &amp; Intent：</strong>用户输入、任务 framing、命令/skill 路由、初始指令塑形。</li>
+            <li><strong>Layer 2. Persistent Knowledge：</strong>文件型持久知识，包括 <code>CLAUDE.md</code>、nested memory、<code>SKILL.md</code>、AutoMem、TeamMem 等。</li>
+            <li><strong>Layer 3. Runtime Continuity：</strong>transcript、session memory、agent memory、runtime cache、compact boundary 等运行期连续性状态。</li>
+            <li><strong>Layer 4. Retrieval &amp; Tooling：</strong>attachments、文件读取、搜索、命令执行、编辑工具，以及它们带回的新鲜仓库事实。</li>
+            <li><strong>Layer 5. Active Context Assembly：</strong>把前四层压缩成最终模型上下文窗口，并在 tool loop 中持续重写。</li>
+          </ul>
+          <div class="callout"><strong>分析框架 vs 实现现实：</strong>代码里并没有“五层接口”或“五层目录”，这个模型只是把已经确认的实现机制按职责域重新整理。它是帮助理解的地图，不是源码里的官方类图。</div>
+
+          <h4>3.12.2 五层静态架构图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart TD
+  subgraph L1["Layer 1: Input &amp; Intent"]
+    I1["用户输入 / queued command / pasted refs"]
+    I2["handlePromptSubmit / executeUserInput"]
+    I3["processUserInputBase<br/>slash / bash / text routing"]
+  end
+
+  subgraph L2["Layer 2: Persistent Knowledge"]
+    P1["Managed / User / Project / Local / AutoMem / TeamMem"]
+    P2["CLAUDE.md / nested memory / SKILL.md / repo guidance"]
+    P3["getMemoryFiles / getUserContext / getSystemContext"]
+  end
+
+  subgraph L3["Layer 3: Runtime Continuity"]
+    R1["transcript JSONL / sessionStorage"]
+    R2["SessionMemory / agentMemory / runtime cache"]
+    R3["compact boundary / summaries / recovery state"]
+  end
+
+  subgraph L4["Layer 4: Retrieval &amp; Tooling"]
+    T1["attachments / IDE selection / diagnostics / tasks"]
+    T2["Read/Grep/Glob/Bash/Edit + Agent tools"]
+    T3["StreamingToolExecutor / toolExecution / toolOrchestration"]
+  end
+
+  subgraph L5["Layer 5: Active Context Assembly"]
+    A1["fetchSystemPromptParts / prependUserContext"]
+    A2["query()"]
+    A3["messagesForQuery / toolResults / compact / collapse / microcompact"]
+    A4["final context window"]
+  end
+
+  I1 --> I2 --> I3 --> A2
+  P1 --> P3 --> A1
+  P2 --> P3
+  R1 --> R2 --> A1
+  R3 --> A3
+  T1 --> A2
+  T2 --> T3 --> A3
+  A1 --> A2
+  A2 --> A3 --> A4</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图展示的是五个责任域的静态关系。重点不是严格分层调用，而是强调第五层 <code>Active Context Assembly</code> 才是真正的汇合点。</p>
+            <p class="diagram-note"><strong>文件映射：</strong>第一层对应 <code>src/utils/handlePromptSubmit.ts</code>、<code>src/utils/processUserInput/processUserInput.ts</code>；第二层对应 <code>src/context.ts</code>、<code>src/utils/claudemd.ts</code>、<code>src/memdir/*</code>；第三层对应 <code>src/utils/sessionStorage.ts</code>、<code>src/services/SessionMemory/*</code>、<code>src/tools/AgentTool/agentMemory.ts</code>；第四层对应 <code>src/utils/attachments.ts</code>、<code>src/tools/*</code>、<code>src/services/tools/*</code>；第五层对应 <code>src/query.ts</code>、<code>src/utils/queryContext.ts</code>。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>memory 在这里只是第二、三层的一部分输入；真正决定“模型此刻看到什么”的，不是 memory 本身，而是第五层的组装与裁剪逻辑。</p>
+          </div>
+
+          <h4>3.12.3 端到端上下文流图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">flowchart LR
+  U["用户请求 / 任务目标"] --> I["Layer 1<br/>Input &amp; Intent"]
+  I --> P["读取 Layer 2<br/>persistent knowledge"]
+  I --> T["触发 Layer 4<br/>attachments / tools / retrieval"]
+  P --> A["Layer 5<br/>active context assembly"]
+  T --> A
+  R["Layer 3<br/>runtime continuity"] --> A
+  A --> M["模型调用"]
+  M --> X["tool_use / assistant"]
+  X --> T
+  X --> W["写回 transcript / summaries / durable memory"]
+  W --> R
+  W --> P
+  T --> A</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图按一次真实任务的推进方向展示五层如何协作。任务不是“先把上下文找全再调用模型”，而是在运行时不断把 memory、检索结果和工具输出回流到活动窗口。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>handlePromptSubmit()</code> / <code>processUserInput()</code> 对应第一层，<code>context.ts</code> / <code>claudemd.ts</code> / <code>memdir/*</code> 对应第二层，<code>sessionStorage.ts</code> / <code>SessionMemory</code> / <code>agentMemory</code> 对应第三层，<code>attachments.ts</code> / <code>services/tools/*</code> 对应第四层，<code>query.ts</code> 对应第五层。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>Claude Code 的项目理解并不主要来自预先构建的统一代码图谱，而是依赖第四层把相关代码逐轮拉入第五层，再通过模型和工具的交替推进扩展理解范围。</p>
+          </div>
+
+          <h4>3.12.4 交互循环图</h4>
+          <div class="diagram-box">
+            <div class="diagram-stage" data-diagram>
+              <script type="text/plain" class="mermaid-source">sequenceDiagram
+  participant U as User/Task
+  participant L1 as Input &amp; Intent
+  participant L2 as Persistent Knowledge
+  participant L3 as Runtime Continuity
+  participant L4 as Retrieval &amp; Tooling
+  participant L5 as Active Assembly
+  participant M as Model
+
+  U->>L1: 输入 / 命令 / 引用 / 任务 framing
+  L1->>L2: 触发 memory / rules / guidance 装载
+  L1->>L4: 触发附件收集 / 工具候选
+  L2-->>L5: user context / system context / durable memory
+  L3-->>L5: transcript state / summary / cache
+  L4-->>L5: files / search results / tool outputs
+  L5->>M: 构造最终 context window
+  M-->>L5: assistant / tool_use
+  alt 需要工具
+    L5->>L4: 执行工具
+    L4-->>L5: tool_result / contextModifier
+    L5->>M: 刷新后的 context window
+  end
+  L5->>L3: transcript / summary / runtime state 更新
+  L5->>L2: extractMemories / autoDream / durable writeback</script>
+            </div>
+          </div>
+          <div class="diagram-meta">
+            <p class="diagram-note"><strong>它在说明什么：</strong>这张图说明 Claude Code 的主循环里，中心节点不是 memory，而是第五层的活动上下文装配。memory、tools、runtime continuity 都围绕它输入与回写。</p>
+            <p class="diagram-note"><strong>文件映射：</strong><code>query.ts</code> 负责第五层的 assemble/refresh，<code>services/tools/*</code> 驱动第四层回路，<code>utils/sessionStorage.ts</code>、<code>services/SessionMemory/*</code>、<code>services/extractMemories/*</code>、<code>services/autoDream/*</code> 承担第三层和第二层的写回。</p>
+            <p class="diagram-note"><strong>关键观察：</strong>所谓“working set”并不是一个独立官方 subsystem，而是第五层在当前时刻维护的活动窗口。它会随着工具结果、compact 和 writeback 边界不断变化。</p>
+          </div>
+
+          <h4>3.12.5 逐层角色与工程意义</h4>
+          <ul class="fact-list">
+            <li><strong>第一层：</strong>决定“这次任务到底是什么”，控制命令路由、引用展开、hook 和安全边界。如果第一层出错，后面层级拿到的就不是正确任务。</li>
+            <li><strong>第二层：</strong>提供跨会话持久知识基底，但它不是最终上下文本身，仍要经过第五层裁剪后才能进模型。</li>
+            <li><strong>第三层：</strong>负责长对话和多步任务的连续性，解决 compact、恢复、forked agent、turn 间延续等问题。</li>
+            <li><strong>第四层：</strong>是 repository understanding 的增量引擎。Claude Code 对陌生代码库的理解很大程度上依赖这一层持续把相关事实拉进来。</li>
+            <li><strong>第五层：</strong>是整个 Context Engine 的中心。真正的系统能力不是“保存了多少 memory”，而是“能否持续装配出当前最有用的上下文窗口”。</li>
+          </ul>
+
+          <h4>3.12.6 这个模型为什么有用</h4>
+          <ul class="fact-list">
+            <li><strong>帮助校正重心：</strong>它把分析重心从 memory 挪回 context construction，避免把 Claude Code 误读成 memory-first architecture。</li>
+            <li><strong>帮助解释复杂度热点：</strong><code>query.ts</code> 之所以复杂，是因为第五层承担了全系统的汇合责任，而不是单纯“模型调用函数”。</li>
+            <li><strong>帮助评估 trade-off：</strong>这套设计的强项是上下文主循环显式、可审计；难点是预算竞争激烈，很多机制都会把信息压向同一个活动窗口。</li>
+          </ul>
         </section>
 
         <section class="content-card">

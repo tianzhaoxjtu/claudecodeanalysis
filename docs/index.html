@@ -89,6 +89,18 @@
         </section>
 
         <section class="content-card">
+          <h2 id="judgements">核心判断速览</h2>
+          <ul class="check-list">
+            <li><code>query.ts</code> 是共享执行内核；REPL 和 <code>QueryEngine</code> 是进入它的不同产品外壳。</li>
+            <li>工具系统是“执行协议层”，不是简单的本地函数库，因为权限、hooks、并发、回写和 transcript 都嵌在里面。</li>
+            <li>Claude Code 的核心能力不是“保存 memory”，而是“持续装配和治理当前上下文窗口”。</li>
+            <li>memory 的实现现实不是官方三层模型，而是“文件型 source taxonomy + 运行时 continuity mechanism”两套正交系统。</li>
+            <li><code>AppState</code> 和 <code>ToolUseContext</code> 是最关键的两个跨层粘合抽象，也是复杂度最集中的两个支点。</li>
+            <li>最难安全修改的区域集中在 <code>src/query.ts</code>、<code>src/services/tools/toolExecution.ts</code>、<code>src/screens/REPL.tsx</code> 与权限系统。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
           <h2 id="shape">系统轮廓</h2>
           <p>最重要的不是文件夹，而是这四条支撑性判断：</p>
           <ul class="check-list">
@@ -107,6 +119,16 @@
           <div class="question-box">3. <code>ToolUseContext</code> 为什么会变成一个重量级应用协议，而不是轻量参数对象？</div>
           <div class="question-box">4. 为什么权限系统必须跨 settings、tool execution、hooks、classifier 和 UI 多层协作？</div>
           <div class="question-box">5. 插件、MCP、skills 为什么必须分三条扩展通路，而不是并进一个统一插件接口？</div>
+        </section>
+
+        <section class="content-card">
+          <h2 id="method">如何使用这套分析产物</h2>
+          <ul class="fact-list">
+            <li><strong>如果你要快速 onboarding：</strong>先看“运行与启动”与“核心执行流”，建立生命周期和主回路心智模型。</li>
+            <li><strong>如果你要改核心行为：</strong>重点读“模块拆解”“交互深潜”“设计评估”，尤其关注 <code>query.ts</code>、tool execution、permissions。</li>
+            <li><strong>如果你要做技术分享：</strong>优先使用“架构”“执行流”“交互深潜”三页里的图和结论，它们最接近系统级叙述。</li>
+            <li><strong>如果你要追溯证据：</strong>Markdown 报告保留了更完整的事实 / 推断 / 未确认项区分，适合作为主文档。</li>
+          </ul>
         </section>
 
         <section class="content-card">

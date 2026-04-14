@@ -145,13 +145,24 @@
         </section>
 
         <section class="content-card">
-          <h2 id="principles">governing ideas</h2>
+          <h2 id="principles">架构支配原则</h2>
           <ul class="check-list">
             <li><strong>共享内核，多入口壳：</strong>REPL 和 headless/SDK 最终都进入 <code>query()</code>，但前置上下文装配不同。</li>
             <li><strong>上下文显式传递，而非 IoC：</strong>代码大量依赖 <code>ToolUseContext</code>、<code>AppState</code>、settings 和 runtime context，而不是容器式依赖注入。</li>
             <li><strong>安全治理内嵌执行链：</strong>权限系统并不是执行末端的确认框，而是工具执行协议的一部分。</li>
             <li><strong>产品形态共存：</strong>大量 <code>feature('...')</code> 表明同一代码库承载多种版本和运行模式。</li>
             <li><strong>模块边界逻辑清楚、物理不严：</strong>职责分层明显，但跨层协作频繁，属于模块化单体而非强隔离架构。</li>
+          </ul>
+        </section>
+
+        <section class="content-card">
+          <h2 id="summary">架构总纲</h2>
+          <ul class="fact-list">
+            <li><strong>执行核心：</strong><code>query.ts</code> 是全局最重要的执行状态机，承担上下文装配、窗口预算、tool loop 和 writeback 边界。</li>
+            <li><strong>产品外壳：</strong>REPL、headless/SDK、remote/bridge 都不是独立内核，而是围绕共享执行核心组织的不同入口。</li>
+            <li><strong>控制平面：</strong>settings、feature gates、permissions、hooks、MCP、plugins、skills 共同决定“这个内核此刻允许做什么”。</li>
+            <li><strong>扩展方式：</strong>插件、MCP、skills 分三条通路接入，不共享一个统一插件抽象，这反映了它们在生命周期和责任上的差异。</li>
+            <li><strong>复杂度来源：</strong>真正难的不是某个算法，而是多入口、多模式、多扩展轴和强安全治理共同叠加出的组合复杂度。</li>
           </ul>
         </section>
 
